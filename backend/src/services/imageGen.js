@@ -89,13 +89,17 @@ async function tryGeminiImageWithModel(prompt, key, modelId) {
       const filepath = path.join(UPLOADS_DIR, filename);
       fs.mkdirSync(UPLOADS_DIR, { recursive: true });
       fs.writeFileSync(filepath, buffer);
-      const exists = fs.existsSync(filepath);
-      const stat = exists ? fs.statSync(filepath) : null;
-      console.log('[imageGen] File written:', filepath, 'exists:', exists, 'size:', stat?.size ?? 'N/A');
-      const base = (config.uploadBaseUrl || '').trim();
-      const finalUrl = base
-        ? `${base.replace(/\/$/, '')}/${filename}`
-        : `/uploads/${filename}`;
+
+      // Server model: images stored locally; use API_PUBLIC_URL for public URLs (Instagram/LinkedIn)
+      const base = (config.apiPublicUrl || config.uploadBaseUrl || '').trim();
+      const fullBase = base && (base.startsWith('http://') || base.startsWith('https://'));
+      let finalUrl;
+      if (fullBase) {
+        const clean = base.replace(/\/$/, '');
+        finalUrl = clean.endsWith('/uploads') ? `${clean}/${filename}` : `${clean}/uploads/${filename}`;
+      } else {
+        finalUrl = `/uploads/${filename}`;
+      }
       console.log('[imageGen] Final URL:', finalUrl);
       return finalUrl;
     }

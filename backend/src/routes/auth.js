@@ -15,7 +15,8 @@ const { linkedin, frontendUrl, session } = config;
 // Email/Password Signup
 router.post('/signup', async (req, res) => {
   try {
-    const { email, password, firstName, lastName } = req.body;
+    const { email, password, name } = req.body;
+    const fullName = (name || '').trim();
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -29,10 +30,9 @@ router.post('/signup', async (req, res) => {
     const user = await User.create({
       email,
       password,
+      name: fullName,
       profile: {
-        firstName: firstName || '',
-        lastName: lastName || '',
-        profilePicture: `https://ui-avatars.com/api/?name=${firstName}+${lastName}&background=random`,
+        profilePicture: `https://ui-avatars.com/api/?name=${encodeURIComponent(fullName || 'User')}&background=random`,
       },
       settings: {
         theme: 'light',

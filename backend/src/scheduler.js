@@ -9,6 +9,7 @@ import { createPost as createFacebookPost } from './services/facebook.js';
 import { createPost as createTwitterPost } from './services/twitter.js';
 import { createPost as createThreadsPost } from './services/threads.js';
 import { createPost as createInstagramPost, createInstagramMediaContainer, publishInstagramMedia, waitForMediaReady } from './services/instagram.js';
+import { resolveImageUrl } from './utils/imageUrl.js';
 
 async function processScheduledPosts() {
   const now = new Date();
@@ -57,11 +58,12 @@ async function processScheduledPosts() {
             }
 
             if (post.imageUrl) {
+              const resolvedUrl = resolveImageUrl(post.imageUrl);
               result = await createLinkedInImagePost(
                 integration.accessToken,
                 authorUrn,
                 trimmed,
-                post.imageUrl,
+                resolvedUrl,
                 post.visibility === 'CONNECTIONS' ? 'CONNECTIONS' : 'PUBLIC'
               );
             } else {
@@ -114,6 +116,11 @@ async function processScheduledPosts() {
               errors.push({ platform: 'instagram', error: 'Instagram requires an image URL' });
               continue;
             }
+            const resolvedIgUrl = resolveImageUrl(post.imageUrl);
+            if (resolvedIgUrl.startsWith('/')) {
+              errors.push({ platform: 'instagram', error: 'Image URL must be absolute for Instagram. Set API_PUBLIC_URL in .env' });
+              continue;
+            }
             const igBaseUrl = integration.instagramPageAccessToken
               ? 'https://graph.facebook.com/v18.0'
               : 'https://graph.instagram.com/v18.0';
@@ -122,7 +129,7 @@ async function processScheduledPosts() {
               integration.platformUserId,
               integration.accessToken,
               {
-                image_url: post.imageUrl,
+                image_url: resolvedIgUrl,
                 caption: trimmed,
                 media_type: 'IMAGE'
               },

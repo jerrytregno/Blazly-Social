@@ -23,6 +23,7 @@ export default function Home() {
 
   useEffect(() => {
     if (platformParam && PLATFORMS.includes(platformParam)) setSelectedPlatform(platformParam);
+    else if (!platformParam) setSelectedPlatform(null);
   }, [platformParam]);
 
   const loadPosts = (isLoadMore = false) => {

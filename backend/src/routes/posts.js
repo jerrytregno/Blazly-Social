@@ -10,6 +10,7 @@ import { createPost as createFacebookPost } from '../services/facebook.js';
 import { createPost as createTwitterPost } from '../services/twitter.js';
 import { createPost as createThreadsPost } from '../services/threads.js';
 import { createPost as createInstagramPost, createInstagramMediaContainer, publishInstagramMedia, getInstagramPublishingLimit, waitForMediaReady } from '../services/instagram.js';
+import { resolveImageUrl } from '../utils/imageUrl.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -420,6 +421,7 @@ router.post('/', async (req, res) => {
     imageUrl: req.body.imageUrl,
     videoUrl: req.body.videoUrl,
     mediaItems: req.body.mediaItems,
+    platforms: Array.isArray(platforms) && platforms.length > 0 ? platforms : [],
     status: 'scheduled',
     scheduledAt: scheduledAtDate,
   };
@@ -512,9 +514,26 @@ router.post('/image', async (req, res) => {
     }
 
     // Validate that imageUrl is publicly accessible (LinkedIn & Instagram require fetchable URLs)
-    if (imageUrl.startsWith('data:') || imageUrl.includes('localhost') || imageUrl.includes('127.0.0.1')) {
+    if (imageUrl.startsWith('data:')) {
       return res.status(400).json({
-        error: 'Image URLs must be publicly accessible for LinkedIn/Instagram. Set UPLOAD_BASE_URL to your S3/Firebase URL in .env, or use relative /uploads for local dev.'
+        error: 'Data URLs are not supported. Use an uploaded image URL instead.'
+      });
+    }
+
+    // Convert relative URLs to absolute - Instagram/LinkedIn require publicly reachable URLs
+    let resolvedImageUrl = imageUrl;
+    if (imageUrl.startsWith('/') && (imageUrl.startsWith('/uploads') || imageUrl.startsWith('/api/'))) {
+      const base = (config.apiPublicUrl || config.uploadBaseUrl || '').trim();
+      if (base && (base.startsWith('http://') || base.startsWith('https://'))) {
+        resolvedImageUrl = `${base.replace(/\/$/, '')}${imageUrl}`;
+      } else {
+        return res.status(400).json({
+          error: 'LinkedIn and Instagram need a public image URL. Add API_PUBLIC_URL to backend/.env. Local dev: run "ngrok http 4000", then set API_PUBLIC_URL=https://your-ngrok-url.ngrok-free.app'
+        });
+      }
+    } else if (imageUrl.includes('localhost') || imageUrl.includes('127.0.0.1')) {
+      return res.status(400).json({
+        error: 'LinkedIn and Instagram cannot fetch from localhost. Set API_PUBLIC_URL to a public URL (e.g. ngrok) in backend/.env'
       });
     }
 
@@ -542,12 +561,12 @@ router.post('/image', async (req, res) => {
               ? 'https://graph.facebook.com/v18.0'
               : 'https://graph.instagram.com/v18.0';
 
-            // Create media container
+            // Create media container (resolvedImageUrl is absolute for Instagram to fetch)
             const container = await createInstagramMediaContainer(
               integration.platformUserId,
               integration.accessToken,
               {
-                image_url: imageUrl,
+                image_url: resolvedImageUrl,
                 caption: content || '',
                 media_type: 'IMAGE'
               },
@@ -621,7 +640,7 @@ router.post('/image', async (req, res) => {
             integration.accessToken,
             authorUrn,
             content || '',
-            imageUrl,
+            resolvedImageUrl,
             'PUBLIC'
           );
 
@@ -802,15 +821,21 @@ router.post('/carousel', async (req, res) => {
               ? 'https://graph.facebook.com/v18.0'
               : 'https://graph.instagram.com/v18.0';
 
-            // Create containers for each media item
+            // Create containers for each media item (resolve relative URLs for Instagram)
             const children = [];
             for (const media of mediaItems) {
+              const mediaUrl = media.imageUrl || media.videoUrl;
+              const resolvedMediaUrl = resolveImageUrl(mediaUrl);
+              if (mediaUrl && resolvedMediaUrl.startsWith('/')) {
+                results.instagram = { success: false, error: 'Carousel media URLs must be absolute. Set API_PUBLIC_URL in .env' };
+                break;
+              }
               const container = await createInstagramMediaContainer(
                 integration.platformUserId,
                 integration.accessToken,
                 {
-                  image_url: media.imageUrl,
-                  video_url: media.videoUrl,
+                  image_url: media.imageUrl ? resolvedMediaUrl : undefined,
+                  video_url: media.videoUrl ? resolveImageUrl(media.videoUrl) : undefined,
                   media_type: media.type || 'IMAGE'
                 },
                 igBaseUrl

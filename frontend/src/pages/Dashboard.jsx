@@ -34,9 +34,7 @@ export default function Dashboard() {
     loadIntegrations();
   }, []);
 
-  const name = user?.profile
-    ? [user.profile.firstName, user.profile.lastName].filter(Boolean).join(' ') || 'User'
-    : 'User';
+  const name = user?.name || [user?.profile?.firstName, user?.profile?.lastName].filter(Boolean).join(' ') || 'User';
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', path: '/dashboard' },

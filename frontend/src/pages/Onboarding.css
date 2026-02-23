@@ -175,8 +175,8 @@
 }
 
 .onboarding__grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 24px;
 }
@@ -189,11 +189,15 @@
   background: rgba(255, 255, 255, 0.06);
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
+  flex: 1 1 140px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .onboarding__item-icon {
   width: 36px;
   height: 36px;
+  min-width: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -204,8 +208,12 @@
 }
 
 .onboarding__item-name {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .onboarding__item-status {
@@ -251,7 +259,7 @@
   color: #fff;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 600px) {
   .onboarding {
     padding: 16px;
     align-items: flex-start;
@@ -264,21 +272,36 @@
   }
 
   .onboarding__grid {
-    grid-template-columns: 1fr;
+    flex-direction: column;
     gap: 10px;
     margin-bottom: 20px;
   }
 
   .onboarding__item {
+    flex: 1 1 auto;
     flex-wrap: wrap;
   }
 
+  .onboarding__item-name {
+    flex: 1 1 60%;
+  }
+
   .onboarding__btn-connect {
-    width: 100%;
-    margin-top: 4px;
+    flex-shrink: 0;
+    margin-left: auto;
   }
 
   .onboarding__actions {
     margin-top: 8px;
+  }
+
+  .onboarding__topbar {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .onboarding__progress-wrap {
+    max-width: 100%;
   }
 }

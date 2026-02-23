@@ -50,6 +50,23 @@
   padding: 0 4px;
 }
 
+.planner-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.planner-timezone-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.planner-timezone-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
 .planner-view-dropdown-wrap {
   display: flex;
   align-items: center;
@@ -431,6 +448,74 @@
 
 .planner-modal-platforms {
   margin-bottom: 16px;
+}
+
+.planner-modal-platforms-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.planner-modal-platform-card {
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.95rem;
+  text-transform: capitalize;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.planner-modal-platform-card:hover {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.planner-modal-platform-card.selected {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent);
+}
+
+.planner-modal-image-gen {
+  margin-bottom: 16px;
+}
+
+.planner-modal-ai-image-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.planner-modal-ai-image-row .planner-modal-ai-input {
+  flex: 1;
+}
+
+.planner-modal-image-preview {
+  margin-top: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.planner-modal-image-preview img {
+  max-width: 120px;
+  max-height: 120px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.planner-modal-image-remove {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 1px solid var(--error, #ef4444);
+  color: var(--error, #ef4444);
+  border-radius: 6px;
+  cursor: pointer;
 }
 
 .planner-modal-platform {

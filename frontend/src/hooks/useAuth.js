@@ -15,14 +15,17 @@ function normalizeUser(source) {
     profileCompletion: source.profileCompletion ?? 0,
     onboardingStep: source.onboardingStep ?? 1,
     profile: {
-      firstName: source.profile?.firstName || source.displayName?.split(' ')[0] || '',
-      lastName: source.profile?.lastName || source.displayName?.split(' ').slice(1).join(' ') || '',
+      name: source.name || [source.profile?.firstName, source.profile?.lastName].filter(Boolean).join(' ') || source.displayName || '',
+      firstName: source.profile?.firstName || (source.name || source.displayName || '').split(' ')[0] || '',
+      lastName: source.profile?.lastName || (source.name || source.displayName || '').split(' ').slice(1).join(' ') || '',
       profilePicture: source.profile?.profilePicture || source.photoURL || source.picture,
     },
   };
   if (source.profile) {
-    base.profile.firstName = source.profile.firstName || base.profile.firstName;
-    base.profile.lastName = source.profile.lastName || base.profile.lastName;
+    const fullName = source.name || [source.profile?.firstName, source.profile?.lastName].filter(Boolean).join(' ') || base.profile.name;
+    base.profile.name = fullName;
+    base.profile.firstName = source.profile.firstName ?? fullName.split(' ')[0];
+    base.profile.lastName = source.profile.lastName ?? fullName.split(' ').slice(1).join(' ');
     base.profile.profilePicture = source.profile.profilePicture || base.profile.profilePicture;
   }
   return base;
@@ -74,15 +77,16 @@ export function useAuth() {
   }, []);
 
   const logout = async () => {
-    if (authMode === 'firebase') {
+    setUser(null);
+    setAuthMode(null);
+    try {
       await signOut(auth);
-    }
+    } catch (_) {}
     try {
       localStorage.removeItem('blazly_token');
       await fetch(`${API}/auth/logout`, { method: 'POST', credentials: 'include' });
     } catch (_) {}
-    setUser(null);
-    setAuthMode(null);
+    window.location.href = '/';
   };
 
   return { user, loading, logout };
@@ -103,9 +107,18 @@ export async function api(path, options = {}) {
   }
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  return fetch(`${API}${path}`, {
+  const res = await fetch(`${API}${path}`, {
     ...options,
     headers,
     credentials: 'include',
   });
+
+  if (res.status === 401 && !options._skipAuthRedirect && !path.startsWith('/me')) {
+    if (typeof window !== 'undefined' && window.location.pathname !== '/' && !window.location.pathname.startsWith('/onboarding')) {
+      const next = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.href = next ? `/?next=${next}` : '/';
+    }
+  }
+
+  return res;
 }

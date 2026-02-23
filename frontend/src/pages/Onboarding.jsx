@@ -8,8 +8,7 @@ const STEPS = [
   { id: 1, title: 'Basic Info', key: 'basicInfo' },
   { id: 2, title: 'Business Details', key: 'businessDetails' },
   { id: 3, title: 'Business Profile Scraper', key: 'website' },
-  { id: 4, title: 'Competitor Analysis', key: 'competitor' },
-  { id: 5, title: 'AI Profile & Connect', key: 'profile' },
+  { id: 4, title: 'AI Profile & Connect', key: 'profile' },
 ];
 
 const PLATFORMS = [
@@ -49,8 +48,6 @@ export default function Onboarding() {
   const [businessName, setBusinessName] = useState('');
   const [businessSummary, setBusinessSummary] = useState('');
   const [websiteUrl, setWebsiteUrl] = useState('');
-  const [competitorName, setCompetitorName] = useState('');
-  const [competitorUrl, setCompetitorUrl] = useState('');
   const [scraping, setScraping] = useState(false);
   const [scrapeError, setScrapeError] = useState('');
   const [integrations, setIntegrations] = useState([]);
@@ -69,7 +66,8 @@ export default function Onboarding() {
         ]);
         if (onboardRes.ok) {
           const d = await onboardRes.json();
-          setStep(d.step || 1);
+          const s = d.step || 1;
+          setStep(s > 4 ? 4 : s);
           setProfileCompletion(d.profileCompletion || 0);
           setOnboardingState(d);
         }
@@ -102,7 +100,7 @@ export default function Onboarding() {
   };
 
   const handleNext = async () => {
-    if (step < 5) {
+    if (step < 4) {
       await saveStepData();
       await updateStep(step + 1);
     } else {
@@ -112,7 +110,7 @@ export default function Onboarding() {
 
   const handleSkip = async () => {
     await updateStep(step + 1, true);
-    if (step >= 5) navigate('/home', { replace: true });
+    if (step >= 4) navigate('/home', { replace: true });
   };
 
   const saveStepData = async () => {
@@ -156,31 +154,6 @@ export default function Onboarding() {
     setScraping(false);
   };
 
-  const handleAddCompetitor = async () => {
-    if (!competitorName.trim() || !competitorUrl.trim()) return;
-    setScraping(true);
-    setScrapeError('');
-    try {
-      const res = await api('/profile/competitors', {
-        method: 'POST',
-        body: JSON.stringify({
-          competitorName: competitorName.trim(),
-          competitorUrl: competitorUrl.trim(),
-        }),
-      });
-      if (res.ok) {
-        setCompetitorName('');
-        setCompetitorUrl('');
-      } else {
-        const d = await res.json();
-        setScrapeError(d.error || 'Failed to add competitor');
-      }
-    } catch (e) {
-      setScrapeError(e.message || 'Failed');
-    }
-    setScraping(false);
-  };
-
   const handleConnect = async (platformId) => {
     setIntegrating(platformId);
     try {
@@ -203,14 +176,14 @@ export default function Onboarding() {
   }
 
   const pct = Math.round(profileCompletion);
-  const progress = (step / 5) * 100;
+  const progress = (step / 4) * 100;
 
   return (
     <div className="onboarding">
       <div className="onboarding__topbar">
         <div className="onboarding__progress-wrap">
           <div className="onboarding__progress-bar" style={{ width: `${progress}%` }} />
-          <span className="onboarding__step-label">Step {step} of 5</span>
+          <span className="onboarding__step-label">Step {step} of 4</span>
         </div>
         <span className="onboarding__pct">{pct}% complete</span>
       </div>
@@ -288,40 +261,7 @@ export default function Onboarding() {
 
         {step === 4 && (
           <>
-            <p>Add competitor URLs for competitor analysis. We compare their data against your business profile from the previous step.</p>
-            <div className="onboarding__field">
-              <label>Competitor name</label>
-              <input
-                type="text"
-                value={competitorName}
-                onChange={(e) => setCompetitorName(e.target.value)}
-                placeholder="Competitor Inc"
-              />
-            </div>
-            <div className="onboarding__field">
-              <label>Competitor URL</label>
-              <input
-                type="url"
-                value={competitorUrl}
-                onChange={(e) => setCompetitorUrl(e.target.value)}
-                placeholder="https://competitor.com"
-              />
-            </div>
-            <button
-              className="onboarding__btn-primary"
-              onClick={handleAddCompetitor}
-              disabled={scraping || !competitorName.trim() || !competitorUrl.trim()}
-            >
-              {scraping ? 'Analyzing…' : 'Add & Analyze'}
-            </button>
-            {scrapeError && <p className="onboarding__error">{scrapeError}</p>}
-            <p className="onboarding__hint">View full analysis on your Profile → Competitors.</p>
-          </>
-        )}
-
-        {step === 5 && (
-          <>
-            <p>Connect your social accounts and review your profile.</p>
+            <p>Connect at least one social account to get started, or skip to complete setup later from Integrations.</p>
             {businessSummary && (
               <div className="onboarding__summary onboarding__summary--full">
                 <strong>Your brand summary</strong>

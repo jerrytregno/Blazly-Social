@@ -7,6 +7,7 @@ import {
   generateAiReply,
   replyToInstagramComment,
   replyToFacebookComment,
+  replyToLinkedInComment,
 } from '../services/inbox.service.js';
 
 const router = Router();
@@ -52,6 +53,9 @@ router.post('/reply', async (req, res) => {
     } else if (platform === 'facebook') {
       const int = integrations.find((i) => i.platform === 'facebook');
       token = int?.facebookPageAccessToken;
+    } else if (platform === 'linkedin') {
+      const int = integrations.find((i) => i.platform === 'linkedin');
+      token = int?.accessToken;
     }
 
     if (!token) return res.status(400).json({ error: 'Platform not connected or no permission' });
@@ -61,6 +65,11 @@ router.post('/reply', async (req, res) => {
       result = await replyToInstagramComment(commentId, replyText, token);
     } else if (platform === 'facebook') {
       result = await replyToFacebookComment(commentId, replyText, token);
+    } else if (platform === 'linkedin') {
+      const { postUrn, parentCommentUrn } = req.body || {};
+      const shareUrn = postUrn || req.body?.postId;
+      if (!shareUrn) return res.status(400).json({ error: 'postUrn required for LinkedIn reply' });
+      result = await replyToLinkedInComment(shareUrn, commentId, replyText, token, parentCommentUrn);
     } else {
       return res.status(400).json({ error: 'Platform not supported for replies' });
     }

@@ -7,6 +7,7 @@ import Home from './pages/Home';
 import Profile from './pages/Profile';
 import Posts from './pages/Posts';
 import Planner from './pages/Planner';
+import Ideas from './pages/Ideas';
 import Inbox from './pages/Inbox';
 import Competitors from './pages/Competitors';
 import Integrations from './pages/Integrations';
@@ -69,6 +70,16 @@ export default function App() {
           <ProtectedRoute>
             <AppLayout>
               <Posts />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/ideas"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <Ideas />
             </AppLayout>
           </ProtectedRoute>
         }

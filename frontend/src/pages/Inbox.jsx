@@ -62,13 +62,18 @@ export default function Inbox() {
     if (!selectedItem || !replyText.trim()) return;
     setReplyLoading(true);
     try {
+      const payload = {
+        commentId: selectedItem.id,
+        platform: selectedItem.platform,
+        replyText: replyText.trim(),
+      };
+      if (selectedItem.platform === 'linkedin' && (selectedItem.postUrn || selectedItem.postId)) {
+        payload.postUrn = selectedItem.postUrn || selectedItem.postId;
+        payload.parentCommentUrn = selectedItem.id?.startsWith?.('urn:li:comment') ? selectedItem.id : undefined;
+      }
       const res = await api('/inbox/reply', {
         method: 'POST',
-        body: JSON.stringify({
-          commentId: selectedItem.id,
-          platform: selectedItem.platform,
-          replyText: replyText.trim(),
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok && data.ok) {
@@ -113,7 +118,7 @@ export default function Inbox() {
       <header className="inbox-header">
         <h1>OmniInbox</h1>
         <p className="inbox-desc">
-          Unified AI comment & message manager. View and reply to comments from Instagram and Facebook.
+          Unified AI comment & message manager. Available for Instagram and Facebook business pages. Threads, LinkedIn, and Twitter support coming soon.
         </p>
 
         <div className="inbox-toolbar">

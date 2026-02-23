@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import axios from 'axios';
+import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import { Integration } from '../models/Integration.js';
@@ -13,7 +14,73 @@ import { exchangeCodeForToken as exchangeInstagramCode, exchangeForLongLivedToke
 const router = Router();
 const { linkedin, frontendUrl } = config;
 
-// All integration routes require authentication
+// Instagram callback - NO auth (receives redirect from Instagram with no session)
+router.get('/instagram/callback', async (req, res) => {
+  const { code, state, error, error_reason } = req.query;
+
+  console.log('Instagram callback received:', { hasCode: !!code, stateLen: state?.length, error });
+
+  if (error) {
+    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(error_reason || error)}`);
+  }
+
+  let savedUserId = null;
+  if (state) {
+    try {
+      const decoded = jwt.verify(state, config.jwt.secret);
+      savedUserId = decoded?.userId;
+    } catch (_) {}
+  }
+  if (!savedUserId) {
+    console.error('Instagram callback: invalid/expired state');
+    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent('Connection timed out. Please try connecting again from the dashboard.')}`);
+  }
+
+  if (!code) {
+    return res.redirect(`${frontendUrl}/home?error=missing_code`);
+  }
+
+  try {
+    console.log('Exchanging Instagram token with redirectUri:', config.instagram.redirectUri);
+    const tokenResult = await exchangeInstagramLoginCode(code, config.instagram.redirectUri);
+
+    if (tokenResult.error) {
+      return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(tokenResult.error)}`);
+    }
+
+    const accessToken = tokenResult.access_token;
+    const instagramUserId = tokenResult.user_id;
+
+    console.log('Token exchange successful:', instagramUserId);
+
+    const integrationData = {
+      userId: savedUserId,
+      platform: 'instagram',
+      platformUserId: instagramUserId,
+      platformUsername: `instagram_user_${instagramUserId}`,
+      accessToken,
+      tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      profile: { name: instagramUserId, username: `instagram_user_${instagramUserId}` },
+      isActive: true,
+      lastUsedAt: new Date(),
+    };
+
+    await Integration.findOneAndUpdate(
+      { userId: savedUserId, platform: 'instagram' },
+      integrationData,
+      { upsert: true, new: true }
+    );
+
+    console.log('Instagram integration successful');
+    res.redirect(`${frontendUrl}/home?integration=instagram&status=connected`);
+  } catch (err) {
+    console.error('Instagram callback error:', err);
+    const msg = err.response?.data?.error?.message || err.message;
+    res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(msg)}`);
+  }
+});
+
+// All other integration routes require authentication
 router.use(requireAuth);
 
 // LinkedIn Integration
@@ -436,12 +503,10 @@ router.get('/threads/callback', async (req, res) => {
   }
 });
 
-// Instagram Direct Login
+// Instagram Direct Login - userId encoded in state JWT (no cookie/session needed across redirect)
 router.get('/instagram', (req, res) => {
-  const state = uuidv4();
-  req.session = req.session || {};
-  req.session.instagramOAuthState = state;
-  req.session.instagramUserId = req.user._id;
+  const statePayload = { userId: req.user._id.toString(), n: uuidv4() };
+  const state = jwt.sign(statePayload, config.jwt.secret, { expiresIn: '10m' });
 
   const params = new URLSearchParams({
     client_id: config.instagram.appId,
@@ -451,82 +516,8 @@ router.get('/instagram', (req, res) => {
     state,
   });
 
-  res.redirect(`https://www.instagram.com/oauth/authorize?${params}`);
-});
-
-router.get('/instagram/callback', async (req, res) => {
-  const { code, state, error, error_reason } = req.query;
-
-  console.log('Instagram callback received:', { code: code?.substring(0, 20) + '...', state, error });
-
-  if (error) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(error_reason || error)}`);
-  }
-
-  const savedState = req.session?.instagramOAuthState;
-  const savedUserId = req.session?.instagramUserId;
-  if (!savedState || savedState !== state || !savedUserId) {
-    console.error('Instagram callback state mismatch:', { savedState, receivedState: state, hasSession: !!req.session });
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent('Connection timed out. Please try connecting again from the dashboard.')}`);
-  }
-
-  if (!code) {
-    return res.redirect(`${frontendUrl}/home?error=missing_code`);
-  }
-
-  try {
-    console.log('Exchanging Instagram token with redirectUri:', config.instagram.redirectUri);
-    const tokenResult = await exchangeInstagramLoginCode(code, config.instagram.redirectUri);
-
-    if (tokenResult.error) {
-      return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(tokenResult.error)}`);
-    }
-
-    const accessToken = tokenResult.access_token;
-    const instagramUserId = tokenResult.user_id;
-    const permissions = tokenResult.permissions || '';
-
-    console.log('Token exchange successful:', { instagramUserId, permissions });
-
-    // Create or update Instagram integration
-    const integrationData = {
-      userId: savedUserId,
-      platform: 'instagram',
-      platformUserId: instagramUserId,
-      platformUsername: `instagram_user_${instagramUserId}`,
-      accessToken,
-      tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000), // 60 days
-      profile: {
-        name: instagramUserId,
-        username: `instagram_user_${instagramUserId}`,
-      },
-      isActive: true,
-      lastUsedAt: new Date(),
-    };
-
-    // Find and update or create integration in MongoDB
-    await Integration.findOneAndUpdate(
-      { userId: savedUserId, platform: 'instagram' },
-      integrationData,
-      { upsert: true, new: true }
-    );
-
-    delete req.session.instagramOAuthState;
-    delete req.session.instagramUserId;
-
-    req.session.save((err) => {
-      if (err) {
-        console.error('Instagram Login session save error:', err);
-        return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent('Session save failed: ' + err.message)}`);
-      }
-      console.log('Instagram integration successful');
-      res.redirect(`${frontendUrl}/home?integration=instagram&status=connected`);
-    });
-  } catch (err) {
-    console.error('Instagram callback error:', err);
-    const msg = err.response?.data?.error?.message || err.message;
-    res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(msg)}`);
-  }
+  console.log('Instagram OAuth start ->', config.instagram.redirectUri);
+  res.redirect(`https://api.instagram.com/oauth/authorize?${params}`);
 });
 
 export default router;

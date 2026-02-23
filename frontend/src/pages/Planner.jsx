@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, api } from '../hooks/useAuth';
 import LoadingScreen from '../components/LoadingScreen';
 import './Planner.css';
@@ -9,6 +9,7 @@ const PLATFORMS = ['linkedin', 'facebook', 'twitter', 'instagram', 'threads'];
 
 export default function Planner() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const [year, setYear] = useState(() => new Date().getFullYear());
   const [month, setMonth] = useState(() => new Date().getMonth());
@@ -23,6 +24,9 @@ export default function Planner() {
   const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [aiTopic, setAiTopic] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
+  const [scheduleImageUrl, setScheduleImageUrl] = useState('');
+  const [scheduleImagePrompt, setScheduleImagePrompt] = useState('');
+  const [scheduleImageLoading, setScheduleImageLoading] = useState(false);
   const [suggestedTimes, setSuggestedTimes] = useState({});
   const [editPostModal, setEditPostModal] = useState(null);
   const [reschedulePost, setReschedulePost] = useState(null);
@@ -31,12 +35,9 @@ export default function Planner() {
   const [dropTarget, setDropTarget] = useState(null);
   const [showSuggestedTimesModal, setShowSuggestedTimesModal] = useState(false);
 
-  const [plannerView, setPlannerView] = useState('calendar');
-  const [ideas, setIdeas] = useState([]);
-  const [ideasLoading, setIdeasLoading] = useState(false);
-  const [ideasCategory, setIdeasCategory] = useState('social');
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [meData, setMeData] = useState(null);
+  const [plannerTimezone, setPlannerTimezone] = useState('');
 
   const loadData = async () => {
     setLoading(true);
@@ -69,23 +70,30 @@ export default function Planner() {
   useEffect(() => { loadData(); }, []);
 
   useEffect(() => {
-    api('/me').then(r => r.ok ? r.json() : null).then(d => d && setMeData(d)).catch(() => {});
-  }, []);
-
-  const loadIdeas = useCallback(async () => {
-    setIdeasLoading(true);
-    try {
-      const res = await api(`/trends/ideas?category=${ideasCategory}`);
-      const data = await res.json();
-      if (res.ok) setIdeas(data.ideas || []);
-      else setIdeas([]);
-    } catch (_) { setIdeas([]); }
-    setIdeasLoading(false);
-  }, [ideasCategory]);
+    const state = location.state;
+    if (state?.openSchedule && state?.scheduleContent !== undefined) {
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10);
+      const dateTime = now.toISOString().slice(0, 16);
+      setScheduleModal({ dateStr, dateTime });
+      setScheduleContent(state.scheduleContent || '');
+      setSchedulePlatforms([]);
+      setAiTopic('');
+      setScheduleImageUrl('');
+      setScheduleImagePrompt('');
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [location.state, location.pathname, navigate]);
 
   useEffect(() => {
-    if (plannerView === 'ideas') loadIdeas();
-  }, [plannerView, ideasCategory, loadIdeas]);
+    api('/me').then(r => r.ok ? r.json() : null).then(d => {
+      if (d) {
+        setMeData(d);
+        setPlannerTimezone(prev => prev || d.timezone || 'UTC');
+      }
+    }).catch(() => {});
+  }, []);
+
 
   const handleEmailSubscribe = async (useProfileEmail, confirmed) => {
     if (!confirmed) return;
@@ -131,6 +139,8 @@ export default function Planner() {
       setScheduleContent('');
       setSchedulePlatforms([]);
       setAiTopic('');
+      setScheduleImageUrl('');
+      setScheduleImagePrompt('');
     }
   };
 
@@ -283,25 +293,50 @@ export default function Planner() {
     setAiLoading(false);
   };
 
+  const handleGenerateScheduleImage = async () => {
+    if (!scheduleImagePrompt.trim()) return;
+    setScheduleImageLoading(true);
+    try {
+      const res = await api('/ai/generate-image', { method: 'POST', body: JSON.stringify({ prompt: scheduleImagePrompt.trim() }) });
+      const data = await res.json();
+      if (res.ok && data.url) setScheduleImageUrl(data.url);
+      else alert(data.error || 'Image generation failed');
+    } catch (e) { alert(e.message || 'Failed'); }
+    setScheduleImageLoading(false);
+  };
+
   const submitSchedule = async () => {
     if (!scheduleModal || !scheduleContent.trim() || schedulePlatforms.length === 0) return;
+    const needsImage = schedulePlatforms.includes('instagram');
+    if (needsImage && !scheduleImageUrl) {
+      alert('Instagram requires an image. Use AI Generate Image or add one.');
+      return;
+    }
     setScheduleSubmitting(true);
     try {
+      const body = {
+        content: scheduleContent.trim(),
+        scheduleAt: new Date(scheduleModal.dateTime).toISOString(),
+        platforms: schedulePlatforms,
+      };
+      if (scheduleImageUrl) {
+        body.imageUrl = scheduleImageUrl;
+        body.mediaType = 'image';
+      }
       const res = await api('/posts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content: scheduleContent.trim(),
-          scheduleAt: new Date(scheduleModal.dateTime).toISOString(),
-          platforms: schedulePlatforms,
-        }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (res.ok) {
         loadData();
-        setScheduleModal((m) => (m ? { ...m } : null));
+        setScheduleModal(null);
         setScheduleContent('');
+        setSchedulePlatforms([]);
         setAiTopic('');
+        setScheduleImageUrl('');
+        setScheduleImagePrompt('');
       } else {
         alert(data.error || 'Failed to schedule');
       }
@@ -333,58 +368,30 @@ export default function Planner() {
       <header className="planner-header">
         <div className="planner-header-top">
           <button className="planner-back" onClick={() => navigate('/home')}>← Back</button>
-          <div className="planner-view-dropdown-wrap">
-            <select
-              className="planner-view-dropdown"
-              value={plannerView}
-              onChange={(e) => setPlannerView(e.target.value)}
-            >
-              <option value="calendar">Plan</option>
-              <option value="ideas">Ideas</option>
-            </select>
+          <div className="planner-header-controls">
+            <label className="planner-timezone-wrap">
+              <span className="planner-timezone-label">Timezone</span>
+              <select className="planner-view-dropdown" value={plannerTimezone} onChange={(e) => setPlannerTimezone(e.target.value)}>
+                <option value="UTC">UTC</option>
+                <option value="America/New_York">Eastern</option>
+                <option value="America/Chicago">Central</option>
+                <option value="America/Los_Angeles">Pacific</option>
+                <option value="Europe/London">London</option>
+                <option value="Asia/Kolkata">India</option>
+              </select>
+            </label>
+            <button className="planner-view-dropdown" type="button" onClick={() => navigate('/ideas')} style={{ cursor: 'pointer', padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.08)', color: '#fff' }}>
+              View Ideas →
+            </button>
           </div>
         </div>
-        <h1>{plannerView === 'ideas' ? 'Content Ideas' : 'Content Calendar'}</h1>
+        <h1>Content Calendar</h1>
         <p className="planner-desc">
-          {plannerView === 'ideas'
-            ? 'AI-suggested post ideas based on your keywords and current trends. Refresh to get new ideas as trends change.'
-            : 'Click a future date to schedule a post. Pick platforms and write your content.'}
+          Click a future date to schedule a post. Pick platforms and write your content.
         </p>
       </header>
 
-      {plannerView === 'ideas' && (
-        <div className="planner-ideas-view">
-          <div className="planner-ideas-toolbar">
-            <select value={ideasCategory} onChange={(e) => setIdeasCategory(e.target.value)} className="planner-ideas-select">
-              <option value="social">Social & Content</option>
-              <option value="business">Business</option>
-              <option value="tech">Tech</option>
-            </select>
-            <button className="planner-ideas-refresh" onClick={loadIdeas} disabled={ideasLoading}>
-              {ideasLoading ? 'Loading…' : '↻ Refresh'}
-            </button>
-          </div>
-          {ideasLoading && ideas.length === 0 ? (
-            <div className="planner-ideas-loading"><LoadingScreen compact /></div>
-          ) : ideas.length === 0 ? (
-            <p className="planner-ideas-empty">No ideas yet. Add keywords in Profile to get personalized suggestions.</p>
-          ) : (
-            <div className="planner-ideas-list">
-              {ideas.map((idea, idx) => (
-                <div key={idx} className="planner-idea-card">
-                  <span className="planner-idea-platform">{idea.platform || 'social'}</span>
-                  <h4>{idea.title || 'Post idea'}</h4>
-                  <p className="planner-idea-body">{idea.postIdea}</p>
-                  {idea.trend && <span className="planner-idea-trend">Trend: {idea.trend}</span>}
-                  <button type="button" className="planner-idea-use" onClick={() => { setPlannerView('calendar'); openAddPostForDay(new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 16), idea.postIdea || ''); }}>Use this idea</button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {plannerView === 'calendar' && <div className="planner-toolbar">
+      <div className="planner-toolbar">
         <div className="planner-nav">
           <button
             onClick={() => {
@@ -406,9 +413,9 @@ export default function Planner() {
             Next →
           </button>
         </div>
-      </div>}
+      </div>
 
-      {plannerView === 'calendar' && <div className="planner-calendar">
+      <div className="planner-calendar">
         <div className="planner-cal-header">
           {DAYS.map((d) => (
             <div key={d} className="planner-cal-day">{d}</div>
@@ -460,7 +467,7 @@ export default function Planner() {
           })}
         </div>
         <p className="planner-drag-hint">Drag scheduled posts between dates to reschedule</p>
-      </div>}
+      </div>
 
       {scheduleModal && (
         <div className="planner-modal-overlay" onClick={() => !scheduleSubmitting && setScheduleModal(null)}>
@@ -529,20 +536,43 @@ export default function Planner() {
             </div>
             <div className="planner-modal-platforms">
               <span className="planner-modal-label">Platforms</span>
-              {activeIntegrations.map((i) => (
-                <label key={i.id} className="planner-modal-platform">
-                  <input
-                    type="checkbox"
-                    checked={schedulePlatforms.includes(i.platform)}
-                    onChange={() => togglePlatform(i.platform)}
-                  />
-                  {i.platform}
-                </label>
-              ))}
+              <div className="planner-modal-platforms-grid">
+                {activeIntegrations.map((i) => (
+                  <button
+                    key={i.id}
+                    type="button"
+                    className={`planner-modal-platform-card ${schedulePlatforms.includes(i.platform) ? 'selected' : ''}`}
+                    onClick={() => togglePlatform(i.platform)}
+                  >
+                    {i.platform}
+                  </button>
+                ))}
+              </div>
             </div>
             {activeIntegrations.length === 0 && (
-              <p className="planner-modal-hint">Connect platforms in the sidebar to schedule.</p>
+              <p className="planner-modal-hint">Connect platforms in Integrations to schedule.</p>
             )}
+            <div className="planner-modal-image-gen">
+              <span className="planner-modal-label">AI Image (required for Instagram)</span>
+              <div className="planner-modal-ai-image-row">
+                <input
+                  type="text"
+                  className="planner-modal-ai-input"
+                  placeholder="Describe image (e.g. sunset over mountains)"
+                  value={scheduleImagePrompt}
+                  onChange={(e) => setScheduleImagePrompt(e.target.value)}
+                />
+                <button type="button" className="planner-modal-ai-btn" onClick={handleGenerateScheduleImage} disabled={!scheduleImagePrompt.trim() || scheduleImageLoading}>
+                  {scheduleImageLoading ? '...' : 'Generate'}
+                </button>
+              </div>
+              {scheduleImageUrl && (
+                <div className="planner-modal-image-preview">
+                  <img src={scheduleImageUrl} alt="Generated" />
+                  <button type="button" className="planner-modal-image-remove" onClick={() => { setScheduleImageUrl(''); setScheduleImagePrompt(''); }}>Remove</button>
+                </div>
+              )}
+            </div>
             <div className="planner-modal-content-box">
               <div className="planner-modal-ai-inline">
                 <input

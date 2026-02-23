@@ -19,8 +19,9 @@ router.get('/', async (req, res) => {
 
   const completion = await calculateProfileCompletion(user);
 
+  const step = user?.onboardingStep ?? 1;
   res.json({
-    step: user?.onboardingStep ?? 1,
+    step: step > 4 ? 4 : step,
     profileCompletion: completion,
     steps: {
       basicInfo: !!(user?.name && user.name.trim()),

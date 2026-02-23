@@ -206,6 +206,7 @@
   background: #fff;
   border: 1px solid #e0e0e0;
   color: #333;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6), 0 12px 48px rgba(0, 0, 0, 0.25);
   position: fixed;
   top: 50%;

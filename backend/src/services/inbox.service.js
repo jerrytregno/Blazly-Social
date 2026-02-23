@@ -1,8 +1,11 @@
 import axios from 'axios';
 import { Integration } from '../models/Integration.js';
+import { Post } from '../models/Post.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const GRAPH_BASE = 'https://graph.facebook.com/v18.0';
+const LINKEDIN_REST = 'https://api.linkedin.com/rest';
+const LINKEDIN_VERSION = '202401';
 
 /**
  * Fetch Instagram media and their comments
@@ -44,6 +47,53 @@ async function fetchInstagramComments(igAccountId, pageAccessToken) {
     }
   } catch (err) {
     console.error('Instagram comments fetch error:', err.response?.data || err.message);
+  }
+  return items;
+}
+
+/**
+ * Fetch LinkedIn comments on the user's posts (from posts we've created)
+ * Uses socialActions/comments API - see LinkedIn Comments API docs
+ */
+async function fetchLinkedInComments(accessToken, shareUrns) {
+  const items = [];
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'X-Restli-Protocol-Version': '2.0.0',
+    'LinkedIn-Version': LINKEDIN_VERSION,
+  };
+
+  for (const urn of shareUrns) {
+    const targetUrn = urn.startsWith('urn:') ? urn : `urn:li:share:${urn}`;
+    try {
+      const { data } = await axios.get(
+        `${LINKEDIN_REST}/socialActions/${targetUrn}/comments`,
+        { headers }
+      );
+      const elements = data.elements || [];
+      for (const c of elements) {
+        const msg = c.message?.text || '';
+        const actorUrn = c.actor || '';
+        const commentId = c.id;
+        const commentUrn = c.commentUrn || `urn:li:comment:(${targetUrn},${commentId})`;
+        items.push({
+          platform: 'linkedin',
+          id: commentUrn,
+          commentId,
+          postUrn: targetUrn,
+          postId: targetUrn,
+          postPreview: msg.slice(0, 80),
+          author: actorUrn.split(':').pop() || 'unknown',
+          text: msg,
+          timestamp: c.created?.time ? new Date(c.created.time).toISOString() : null,
+          type: 'comment',
+        });
+      }
+    } catch (err) {
+      if (err.response?.status !== 404) {
+        console.error('LinkedIn comments fetch error:', err.response?.data || err.message);
+      }
+    }
   }
   return items;
 }
@@ -114,6 +164,29 @@ export async function fetchUnifiedInbox(userId) {
         allItems.push(i);
       });
     }
+    if (int.platform === 'linkedin' && int.accessToken) {
+      const posts = await Post.find({
+        userId,
+        status: 'published',
+        $or: [
+          { 'platformIds.linkedin': { $exists: true, $ne: '' } },
+          { linkedinPostUrn: { $exists: true, $ne: '' } },
+        ],
+      }).limit(20);
+
+      const shareUrns = [];
+      for (const p of posts) {
+        const urn = p.platformIds?.get?.('linkedin') || p.linkedinPostUrn;
+        if (urn) shareUrns.push(urn);
+      }
+      if (shareUrns.length > 0) {
+        const items = await fetchLinkedInComments(int.accessToken, shareUrns);
+        items.forEach((i) => {
+          i.accountName = int.profile?.name || 'LinkedIn';
+          allItems.push(i);
+        });
+      }
+    }
   }
 
   allItems.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
@@ -160,6 +233,35 @@ export async function replyToInstagramComment(commentId, replyText, pageAccessTo
     return { ok: true };
   } catch (err) {
     const msg = err.response?.data?.error?.message || err.message;
+    return { error: msg };
+  }
+}
+
+/**
+ * Reply to LinkedIn comment (socialActions/comments API)
+ * commentId can be commentUrn or { postUrn, commentId } for nested
+ */
+export async function replyToLinkedInComment(postUrn, commentId, replyText, accessToken, parentCommentUrn = null) {
+  const targetUrn = postUrn.startsWith('urn:') ? postUrn : `urn:li:share:${postUrn}`;
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+    'X-Restli-Protocol-Version': '2.0.0',
+    'LinkedIn-Version': LINKEDIN_VERSION,
+  };
+
+  const body = {
+    object: targetUrn,
+    message: { text: replyText },
+  };
+  if (parentCommentUrn) body.parentComment = parentCommentUrn;
+
+  try {
+    const url = `${LINKEDIN_REST}/socialActions/${targetUrn}/comments`;
+    await axios.post(url, body, { headers });
+    return { ok: true };
+  } catch (err) {
+    const msg = err.response?.data?.message || err.response?.data?.error || err.message;
     return { error: msg };
   }
 }
