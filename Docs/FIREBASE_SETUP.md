@@ -129,22 +129,21 @@ service cloud.firestore {
 | User profile | Firestore / Realtime | Structured user data        |
 | Posts        | Firestore            | Posts, scheduling, metadata|
 | Integrations | Firestore            | OAuth tokens, platform config |
-| AI images    | **Server uploads/**  | Stored on your backend      |
+| AI images    | **Firebase Storage** | `uploads/` path, public URLs |
+| Post images  | **Firebase Storage** | User uploads, public URLs    |
 
 Realtime Database: good for real-time syncing and simple JSON.  
-Firestore: better for complex queries, indexing, and scaling.
+Firestore: better for complex queries, indexing, and scaling.  
+Firebase Storage: images (uploads + AI-generated) – public URLs, no `API_PUBLIC_URL` needed.
 
 ---
 
-## 7. Image Generation (Server Model)
+## 7. Image Storage (Firebase Storage)
 
-1. Gemini generates an image.
-2. Backend saves it to `backend/uploads/`.
-3. Set `API_PUBLIC_URL` in `.env` to your server's public URL (e.g. `https://yourapp.com` or `https://xxx.ngrok.io` for local).
-4. Public URL: `{API_PUBLIC_URL}/uploads/ai-xxx.png`
-5. Instagram/LinkedIn fetch from that URL.
-
-No Firebase Storage or service account needed.
+1. **User uploads** (PostComposer) and **AI-generated images** (Gemini) are stored in Firebase Storage at `uploads/`.
+2. Each file gets a public URL: `https://storage.googleapis.com/{bucket}/uploads/{filename}`.
+3. Instagram/LinkedIn fetch directly from these URLs – no `API_PUBLIC_URL` or ngrok needed.
+4. Ensure `storage.rules` allows public read for `uploads/` (see project root).
 
 ---
 

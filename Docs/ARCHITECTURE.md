@@ -11,7 +11,7 @@
 ```
 ┌─────────────────┐     HTTPS      ┌─────────────────┐     REST API      ┌─────────────────┐
 │   React + Vite  │ ◄────────────► │  Node.js API    │ ◄───────────────► │  LinkedIn API   │
-│   (Frontend)    │   /api proxy   │  (Express)      │   w_member_social │  (Share posts)  │
+│   (client/)     │   /api proxy   │  (server/)      │   w_member_social │  (Share posts)  │
 └────────┬────────┘                └────────┬────────┘                   └─────────────────┘
          │                                  │
          │                                  │
@@ -23,8 +23,9 @@
 └─────────────────┘                └─────────────────┘
 ```
 
-- **Frontend**: React + Vite, glossy UI, talks only to your backend.
-- **Backend**: Node.js (Express), handles auth, scheduling, and all LinkedIn calls.
+- **Frontend**: React + Vite in `client/`, glossy UI, talks only to your backend.
+- **Backend**: Node.js (Express) in `server/`, handles auth, scheduling, and all LinkedIn calls.
+- **Unified**: Single codebase with one `package.json`; `npm run dev` runs both; production serves built frontend from Express.
 - **Database**: MongoDB for users, LinkedIn tokens, drafts, and scheduled posts.
 - **LinkedIn**: 3-legged OAuth + Share on LinkedIn REST API (product version 202401).
 

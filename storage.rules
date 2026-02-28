@@ -1,0 +1,16 @@
+rules_version = '2';
+
+// Firebase Storage rules
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Uploaded images (post images, AI-generated) - public read for LinkedIn/Instagram to fetch
+    match /uploads/{fileName} {
+      allow read: if true;
+      allow write: if false; // Backend (Admin SDK) only
+    }
+    // LinkedIn posts backup
+    match /linkedin-posts/{userId}/{fileName} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

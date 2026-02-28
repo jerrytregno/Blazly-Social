@@ -1,0 +1,222 @@
+.ideas-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.ideas-custom-input {
+  flex: 1;
+  min-width: 180px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+
+.ideas-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.ideas-toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  position: relative;
+}
+
+.ideas-toggle-switch input {
+  position: absolute;
+  width: 2.5rem;
+  height: 1.25rem;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.ideas-toggle-slider {
+  display: inline-block;
+  position: relative;
+  width: 2.5rem;
+  height: 1.25rem;
+  background: var(--border);
+  border-radius: 1rem;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.ideas-toggle-slider::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1rem;
+  height: 1rem;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s;
+}
+
+.ideas-toggle-switch input:checked + .ideas-toggle-slider {
+  background: var(--primary, #0a66c2);
+}
+
+.ideas-toggle-switch input:checked + .ideas-toggle-slider::after {
+  transform: translateX(1.25rem);
+}
+
+.ideas-hint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+}
+
+.planner-idea-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.planner-idea-content-type {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+}
+
+.planner-idea-implement {
+  padding: 0.4rem 0.9rem;
+  background: var(--primary, #0a66c2);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 0.5rem;
+}
+
+.planner-ideas-empty-state {
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-muted);
+}
+
+.ideas-use-modal .ideas-modal-prompt {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.ideas-modal-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.planner-modal-submit--primary {
+  background: var(--primary, #0a66c2);
+  color: white;
+}
+
+.ideas-platform-trends {
+  margin-bottom: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.ideas-trends-toggle {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  text-align: left;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ideas-trends-toggle:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.ideas-trends-content {
+  padding: 0 1rem 1rem;
+  min-height: 80px;
+}
+
+.ideas-trends-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.ideas-trends-platform {
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 8px;
+}
+
+.ideas-trends-platform-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.ideas-trends-badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--accent);
+  color: white;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.ideas-trends-note {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.ideas-trends-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ideas-trends-list li {
+  font-size: 0.9rem;
+  padding: 0.25rem 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ideas-trends-cat {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
