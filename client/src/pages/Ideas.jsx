@@ -17,7 +17,6 @@ export default function Ideas() {
   const [ideasCategory, setIdeasCategory] = useState('social');
   const [customInstruction, setCustomInstruction] = useState('');
   const [includeImageToggle, setIncludeImageToggle] = useState(true);
-  const [useIdeaModal, setUseIdeaModal] = useState(null); // { idea, platform }
 
   const loadIdeas = useCallback(async () => {
     setIdeasLoading(true);
@@ -62,50 +61,20 @@ export default function Ideas() {
     setGenerateLoading(false);
   };
 
+  // All idea types navigate to the AI content generator with the idea as a prompt.
+  // The user must explicitly click "Post" / "Schedule" in the composer - ideas never auto-post.
   const handleImplementIdea = (idea) => {
-    if (idea.contentType === 'reel') {
-      navigate(`/home?platform=instagram`, {
-        state: { ideaPrompt: idea.postIdea, contentType: 'reel', platform: 'instagram' },
-      });
-      return;
-    }
-    if (idea.contentType === 'image' && idea.platform === 'instagram') {
-      navigate(`/home?platform=instagram`, {
-        state: { ideaPrompt: idea.postIdea, contentType: 'image', platform: 'instagram' },
-      });
-      return;
-    }
-    setUseIdeaModal({ idea, platform: idea.platform });
-  };
-
-  const handleSendNow = () => {
-    if (!useIdeaModal) return;
-    const { idea, platform } = useIdeaModal;
-    navigate(`/home?platform=${platform}`, {
+    navigate(`/home?platform=${idea.platform || 'linkedin'}`, {
       state: {
         ideaPrompt: idea.postIdea,
-        sendNow: true,
+        ideaTitle: idea.title,
+        contentType: idea.contentType || 'text',
+        platform: idea.platform,
         includeImage: includeImageToggle,
+        // Never pass sendNow - user must deliberately click Post
       },
     });
-    setUseIdeaModal(null);
   };
-
-  const handleScheduleForLater = () => {
-    if (!useIdeaModal) return;
-    const { idea, platform } = useIdeaModal;
-    navigate(`/home?platform=${platform}`, {
-      state: {
-        ideaPrompt: idea.postIdea,
-        sendNow: false,
-        includeImage: includeImageToggle,
-      },
-    });
-    setUseIdeaModal(null);
-  };
-
-  const isReelOrVideoOnly = (idea) =>
-    idea.contentType === 'reel' || (idea.platform === 'instagram' && idea.contentType === 'reel');
 
   return (
     <div className="planner-page">
@@ -182,55 +151,19 @@ export default function Ideas() {
                 <h4>{idea.title || 'Post idea'}</h4>
                 <p className="planner-idea-body">{idea.postIdea}</p>
                 {idea.trend && <span className="planner-idea-trend">Trend: {idea.trend}</span>}
-                {isReelOrVideoOnly(idea) ? (
-                  <button
-                    type="button"
-                    className="planner-idea-implement"
-                    onClick={() => handleImplementIdea(idea)}
-                  >
-                    Implement idea →
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="planner-idea-use"
-                    onClick={() => handleImplementIdea(idea)}
-                  >
-                    Use this idea
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="planner-idea-implement"
+                  onClick={() => handleImplementIdea(idea)}
+                >
+                  Implement idea →
+                </button>
               </div>
             ))}
           </div>
         )}
       </div>
 
-      {useIdeaModal && (
-        <div className="planner-modal-overlay" onClick={() => setUseIdeaModal(null)}>
-          <div className="planner-modal ideas-use-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Use idea: {useIdeaModal.idea.title}</h3>
-            <p className="ideas-modal-prompt">{useIdeaModal.idea.postIdea}</p>
-            <label className="ideas-modal-toggle ideas-toggle-switch">
-              <input
-                type="checkbox"
-                checked={includeImageToggle}
-                onChange={(e) => setIncludeImageToggle(e.target.checked)}
-              />
-              <span className="ideas-toggle-slider" />
-              <span>Generate image with AI</span>
-            </label>
-            <div className="planner-modal-actions">
-              <button className="planner-modal-cancel" onClick={() => setUseIdeaModal(null)}>Cancel</button>
-              <button className="planner-modal-submit" onClick={handleScheduleForLater}>
-                Schedule for later
-              </button>
-              <button className="planner-modal-submit planner-modal-submit--primary" onClick={handleSendNow}>
-                Send now
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -120,9 +120,17 @@ Return JSON ONLY, no markdown:
 /**
  * Get profile optimization suggestions for a user's connected platforms
  */
-export async function getProfileOptimizerSuggestions(userId, platformFilter = null) {
-  const integrations = await integrationRepo.find({ userId, isActive: true });
-  const businessProfile = await userProfileRepo.findOne({ userId });
+export async function getProfileOptimizerSuggestions(userId, platformFilter = null, clientIntegrations = null) {
+  let integrations;
+  if (clientIntegrations?.length) {
+    integrations = clientIntegrations.filter((i) => i.isActive !== false);
+  } else {
+    integrations = await integrationRepo.find({ userId, isActive: true });
+  }
+  let businessProfile = null;
+  try {
+    businessProfile = await userProfileRepo.findOne({ userId });
+  } catch (_) {}
 
   const results = [];
 

@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { auth } from '../firebase';
 import { useAuth, api } from '../hooks/useAuth';
+import { getPosts, updatePost, deletePost } from '../services/firestore';
 import LoadingScreen from '../components/LoadingScreen';
 import PlatformLogo from '../components/PlatformLogo';
 import './Posts.css';
@@ -84,18 +86,17 @@ export default function Posts() {
   });
 
   const loadPosts = async () => {
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return setLoading(false);
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      params.set('limit', '50');
-      if (filters.platform) params.set('platform', filters.platform);
-      if (filters.status) params.set('status', filters.status);
-      if (filters.fromDate) params.set('fromDate', filters.fromDate);
-      if (filters.toDate) params.set('toDate', filters.toDate);
-      const res = await api(`/posts?${params}`);
-      const data = await res.json();
-      setPosts(data.posts || []);
-      setTotal(data.total ?? 0);
+      const items = await getPosts(uid, {
+        limit: 50,
+        platform: filters.platform || undefined,
+        status: filters.status || undefined,
+      });
+      setPosts(items);
+      setTotal(items.length);
     } catch (_) {
       setPosts([]);
       setTotal(0);
@@ -105,25 +106,33 @@ export default function Posts() {
 
   useEffect(() => {
     loadPosts();
-  }, [filters.platform, filters.status, filters.fromDate, filters.toDate]);
+  }, [user?.id, filters.platform, filters.status, filters.fromDate, filters.toDate]);
 
   const handleExport = async (format) => {
-    const params = new URLSearchParams();
-    params.set('limit', '1000');
-    params.set('format', format);
-    if (filters.platform) params.set('platform', filters.platform);
-    if (filters.status) params.set('status', filters.status);
-    if (filters.fromDate) params.set('fromDate', filters.fromDate);
-    if (filters.toDate) params.set('toDate', filters.toDate);
-    const res = await api(`/posts?${params}`);
-    const text = await res.text();
-    const blob = new Blob([text], { type: format === 'csv' ? 'text/csv' : 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `posts.${format === 'csv' ? 'csv' : 'json'}`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
+    try {
+      const items = await getPosts(uid, { limit: 1000, platform: filters.platform || undefined, status: filters.status || undefined });
+      let text;
+      if (format === 'csv') {
+        const headers = ['id', 'content', 'platforms', 'status', 'createdAt', 'publishedAt', 'scheduledAt'];
+        const rows = items.map((p) =>
+          [p.id, (p.content || '').replace(/"/g, '""'), (p.platforms || []).join(';'), p.status || '', p.createdAt ? new Date(p.createdAt).toISOString() : '', p.publishedAt ? new Date(p.publishedAt).toISOString() : '', p.scheduledAt ? new Date(p.scheduledAt).toISOString() : ''].map((c) => `"${String(c)}"`).join(',')
+        );
+        text = ['"' + headers.join('","') + '"', ...rows].join('\n');
+      } else {
+        text = JSON.stringify({ posts: items, total: items.length }, null, 2);
+      }
+      const blob = new Blob([text], { type: format === 'csv' ? 'text/csv' : 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `posts.${format === 'csv' ? 'csv' : 'json'}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert(e.message || 'Export failed');
+    }
   };
 
   const handleExportPDF = () => {
@@ -152,15 +161,16 @@ export default function Posts() {
 
   const handleDelete = async (post) => {
     if (!window.confirm('Delete this post?')) return;
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
     try {
-      const res = await api(`/posts/${post.id}`, { method: 'DELETE' });
-      if (res.ok) {
+      const ok = await deletePost(uid, post.id || post._id);
+      if (ok) {
         loadPosts();
         setViewPost(null);
         setEditPost(null);
       } else {
-        const d = await res.json();
-        alert(d.error || 'Delete failed');
+        alert('Delete failed');
       }
     } catch (e) {
       alert(e.message || 'Delete failed');
@@ -169,20 +179,18 @@ export default function Posts() {
 
   const handleSaveEdit = async () => {
     if (!editPost) return;
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
     try {
-      const res = await api(`/posts/${editPost.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          content: editPost.content,
-          scheduleAt: editPost.status === 'scheduled' ? editPost.scheduledAt : undefined,
-        }),
+      const updated = await updatePost(uid, editPost.id || editPost._id, {
+        content: editPost.content,
+        ...(editPost.status === 'scheduled' && editPost.scheduledAt && { scheduledAt: new Date(editPost.scheduledAt) }),
       });
-      if (res.ok) {
+      if (updated) {
         loadPosts();
         setEditPost(null);
       } else {
-        const d = await res.json();
-        alert(d.error || 'Update failed');
+        alert('Update failed');
       }
     } catch (e) {
       alert(e.message || 'Update failed');

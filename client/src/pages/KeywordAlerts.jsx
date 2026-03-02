@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { auth } from '../firebase';
 import { api } from '../hooks/useAuth';
+import { getIntegrations, getUserProfile } from '../services/firestore';
 import LoadingScreen from '../components/LoadingScreen';
 import PlatformLogo from '../components/PlatformLogo';
 import './KeywordAlerts.css';
@@ -9,60 +11,79 @@ const PLATFORM_LABELS = {
   linkedin: 'LinkedIn',
   instagram: 'Instagram',
   facebook: 'Facebook',
-  threads: 'Threads',
 };
 
-const ALL_PLATFORMS = ['twitter', 'linkedin'];
+// Threads has no public search API — excluded from keyword monitoring
+const ALL_PLATFORMS = ['twitter', 'linkedin', 'instagram', 'facebook'];
 
 export default function KeywordAlerts() {
   const [config, setConfig] = useState({
     keywords: [],
-    platforms: ['twitter'],
+    platforms: ['twitter', 'linkedin'],
     enabled: true,
     lastPolledAt: null,
   });
+  const [integrations, setIntegrations] = useState([]);
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [newKeyword, setNewKeyword] = useState('');
   const [runResult, setRunResult] = useState(null);
+  const saveTimeoutRef = useRef(null);
 
-  const loadConfig = async () => {
+  const loadConfig = async (profileKeywords = []) => {
     try {
       const r = await api('/keyword-poll');
       const data = await r.json();
-      const platforms = data.platforms?.length ? data.platforms : ['twitter'];
-      setConfig({ ...data, platforms });
-      return { ...data, platforms };
+      const platforms = data.platforms?.length ? data.platforms : ['twitter', 'linkedin'];
+      // Merge profile keywords if not already in config
+      let keywords = data.keywords || [];
+      if (profileKeywords.length && keywords.length === 0) {
+        keywords = profileKeywords;
+      }
+      const merged = { ...data, platforms, keywords };
+      setConfig(merged);
+      return merged;
     } catch (_) {
-      setConfig({
-        keywords: [],
-        platforms: ['twitter'],
+      const fallback = {
+        keywords: profileKeywords,
+        platforms: ['twitter', 'linkedin'],
         enabled: true,
         lastPolledAt: null,
-      });
-      return { platforms: ['twitter'] };
+      };
+      setConfig(fallback);
+      return fallback;
     }
   };
 
+  // Load matches from server (may be empty with credential errors - matches persist in local state)
   const loadMatches = useCallback(async (platformsOverride) => {
     try {
       const platforms = platformsOverride ?? config.platforms ?? ['twitter'];
       const params = platforms?.length ? `?platforms=${platforms.join(',')}` : '';
       const r = await api(`/keyword-poll/matches${params}`);
       const data = await r.json();
-      setMatches(data.matches || []);
-    } catch (_) {
-      setMatches([]);
-    }
+      // Only update if server returned actual matches (don't wipe existing local matches)
+      if (Array.isArray(data.matches) && data.matches.length > 0) {
+        setMatches(data.matches);
+      }
+    } catch (_) {}
   }, [config.platforms]);
 
   useEffect(() => {
     setLoading(true);
-    loadConfig()
-      .then(() => {})
-      .finally(() => setLoading(false));
+    const uid = auth.currentUser?.uid;
+    Promise.allSettled([
+      uid ? getIntegrations(uid) : Promise.resolve([]),
+      uid ? getUserProfile(uid) : Promise.resolve(null),
+    ]).then(([intResult, profileResult]) => {
+      if (intResult.status === 'fulfilled') setIntegrations(intResult.value || []);
+      const profileKeywords = profileResult.status === 'fulfilled'
+        ? (profileResult.value?.keywords || [])
+        : [];
+      return loadConfig(profileKeywords);
+    }).finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -81,17 +102,21 @@ export default function KeywordAlerts() {
     handleSave({ ...config, keywords: config.keywords.filter((x) => x !== k) });
   };
 
-  const handleSave = async (next) => {
+  const handleSave = (next) => {
+    setConfig(next);
+    // Debounce: save to server 600ms after last change
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     setSaving(true);
-    try {
-      await api('/keyword-poll', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next),
-      });
-      setConfig(next);
-    } catch (_) {}
-    setSaving(false);
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await api('/keyword-poll', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(next),
+        });
+      } catch (_) {}
+      setSaving(false);
+    }, 600);
   };
 
   const togglePlatform = (p) => {
@@ -109,11 +134,32 @@ export default function KeywordAlerts() {
     setRunning(true);
     setRunResult(null);
     try {
-      const r = await api('/keyword-poll/run', { method: 'POST' });
+      const r = await api('/keyword-poll/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keywords: config.keywords,
+          platforms: config.platforms,
+          integrations,
+        }),
+      });
       const data = await r.json();
       setRunResult(data);
-      const cfg = await loadConfig();
-      await loadMatches(cfg?.platforms);
+      // Merge server-returned matches with existing matches (for client-mode - never overwrites)
+      if (Array.isArray(data.matches) && data.matches.length > 0) {
+        setMatches((prev) => {
+          const existingIds = new Set(prev.map((m) => m.postId || m._id));
+          const newOnes = data.matches.filter((m) => !existingIds.has(m.postId));
+          return [...newOnes.map((m) => ({
+            ...m,
+            _id: m.postId || m._id,
+            read: false,
+            createdAt: new Date().toISOString(),
+          })), ...prev];
+        });
+      }
+      // Only call loadMatches if there's a chance server has real data
+      await loadMatches(config.platforms);
     } catch (_) {
       setRunResult({ matched: 0, message: 'Failed to run' });
     }
@@ -127,8 +173,17 @@ export default function KeywordAlerts() {
     } catch (_) {}
   };
 
-  const selectedPlatforms = config.platforms || ['twitter'];
+  const selectedPlatforms = (config.platforms || ['twitter']).filter((p) => p !== 'threads');
   const canUnselectTwitter = selectedPlatforms.length > 1;
+
+  // Detect when Instagram is selected but user only has a direct-login token (no Facebook Business)
+  const igIntegration = integrations.find((i) => i.platform === 'instagram');
+  const igIsDirectLogin = igIntegration && !igIntegration.instagramBusinessAccountId;
+  const showIgWarning = selectedPlatforms.includes('instagram') && igIsDirectLogin;
+
+  // Detect when Facebook is selected but no page is connected
+  const fbIntegration = integrations.find((i) => i.platform === 'facebook');
+  const showFbWarning = selectedPlatforms.includes('facebook') && fbIntegration && !fbIntegration.facebookPageId;
 
   if (loading) {
     return (
@@ -191,6 +246,21 @@ export default function KeywordAlerts() {
             ))}
           </div>
         </div>
+
+        {showIgWarning && (
+          <div className="keyword-alerts-platform-notice keyword-alerts-notice--warn">
+            <strong>Instagram:</strong> Hashtag search requires a Facebook Business account connection.
+            Your Instagram is connected via direct login, which does not support public hashtag search.
+            To enable: go to <strong>Integrations → Facebook</strong> and connect a Page that has an
+            Instagram Business account linked to it.
+          </div>
+        )}
+        {showFbWarning && (
+          <div className="keyword-alerts-platform-notice keyword-alerts-notice--warn">
+            <strong>Facebook:</strong> No Facebook Page is connected. Keyword search scans your
+            page&apos;s feed for mentions. Connect a Facebook Page in <strong>Integrations</strong>.
+          </div>
+        )}
 
         <div className="keyword-alerts-actions">
           <label className="keyword-alerts-toggle keyword-alerts-toggle-switch">

@@ -8,7 +8,10 @@ import { config } from '../config.js';
  */
 export async function exchangeCodeForToken(code) {
   try {
-    const { data } = await axios.post(
+    // Use responseType: 'text' to avoid float64 precision loss on large user_id integers.
+    // Threads user IDs can be 17+ digits (> Number.MAX_SAFE_INTEGER), so JSON.parse
+    // would silently corrupt them. We extract user_id via regex to keep it as a string.
+    const { data: rawText } = await axios.post(
       'https://graph.threads.net/oauth/access_token',
       new URLSearchParams({
         client_id: config.threads.appId,
@@ -17,21 +20,67 @@ export async function exchangeCodeForToken(code) {
         redirect_uri: config.threads.redirectUri,
         code,
       }),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      }
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, responseType: 'text' }
     );
 
+    const userIdMatch = typeof rawText === 'string' ? rawText.match(/"user_id"\s*:\s*(\d+)/) : null;
+    const userId = userIdMatch ? userIdMatch[1] : null; // exact string, no float rounding
+
+    const parsed = typeof rawText === 'string' ? JSON.parse(rawText) : rawText;
+
     return {
-      access_token: data.access_token,
-      user_id: data.user_id,
+      access_token: parsed.access_token,
+      user_id: userId || String(parsed.user_id || ''),
     };
   } catch (err) {
     const msg = err.response?.data?.error_message || err.message;
     console.error('Threads Token Exchange Error:', msg);
     return { error: msg };
+  }
+}
+
+/**
+ * Exchange a short-lived Threads token for a long-lived token (valid 60 days).
+ * Must be called right after exchangeCodeForToken.
+ */
+export async function exchangeForLongLivedToken(shortLivedToken) {
+  try {
+    const { data } = await axios.get('https://graph.threads.net/access_token', {
+      params: {
+        grant_type: 'th_exchange_token',
+        client_id: config.threads.appId,
+        client_secret: config.threads.appSecret,
+        access_token: shortLivedToken,
+      },
+    });
+    return {
+      access_token: data.access_token,
+      expires_in: data.expires_in, // seconds (~5184000 = 60 days)
+    };
+  } catch (err) {
+    console.warn('Threads long-lived token exchange failed, using short-lived:', err.response?.data?.error_message || err.message);
+    return { access_token: shortLivedToken, expires_in: 3600 };
+  }
+}
+
+/**
+ * Refresh a long-lived Threads token (refreshable within 24h–60 day window).
+ */
+export async function refreshLongLivedToken(longLivedToken) {
+  try {
+    const { data } = await axios.get('https://graph.threads.net/refresh_access_token', {
+      params: {
+        grant_type: 'th_refresh_token',
+        access_token: longLivedToken,
+      },
+    });
+    return {
+      access_token: data.access_token,
+      expires_in: data.expires_in,
+    };
+  } catch (err) {
+    console.warn('Threads token refresh failed:', err.response?.data?.error_message || err.message);
+    return null;
   }
 }
 
@@ -43,7 +92,8 @@ export async function exchangeCodeForToken(code) {
  */
 export async function getThreadsUser(accessToken, userId) {
   try {
-    const { data } = await axios.get(`https://graph.threads.net/v1.0/${userId}`, {
+    // Always use 'me' to avoid imprecise float64 representation of large user IDs in URLs.
+    const { data } = await axios.get(`https://graph.threads.net/v1.0/me`, {
       params: {
         fields: 'id,username',
         access_token: accessToken,
@@ -51,7 +101,7 @@ export async function getThreadsUser(accessToken, userId) {
     });
 
     return {
-      id: data.id,
+      id: String(data.id || ''), // data.id from Meta API is already a string
       username: data.username,
     };
   } catch (err) {
@@ -109,8 +159,9 @@ export async function createMediaContainer(accessToken, userId, text, options = 
       params.append('is_carousel_item', 'true');
     }
 
+    // Use 'me' — avoids float64 precision loss for large Threads user IDs (> MAX_SAFE_INTEGER).
     const { data } = await axios.post(
-      `https://graph.threads.net/v1.0/${userId}/threads`,
+      `https://graph.threads.net/v1.0/me/threads`,
       params.toString(),
       {
         headers: {
@@ -167,8 +218,9 @@ export async function createCarouselContainer(accessToken, userId, childrenIds, 
       params.append('text', text);
     }
 
+    // Use 'me' — avoids float64 precision loss for large Threads user IDs.
     const { data } = await axios.post(
-      `https://graph.threads.net/v1.0/${userId}/threads`,
+      `https://graph.threads.net/v1.0/me/threads`,
       params.toString(),
       {
         headers: {
@@ -196,7 +248,7 @@ export async function createCarouselContainer(accessToken, userId, childrenIds, 
  * @param {string} creationId - Media container ID to publish
  * @returns {Promise<{ id?: string, url?: string, error?: string }>}
  */
-export async function publishThread(accessToken, userId, creationId) {
+export async function publishThread(accessToken, userId, creationId, username = null) {
   try {
     // Wait for media to be processed (Threads API recommends 5–30s; use 8s for images)
     await new Promise(resolve => setTimeout(resolve, 8000));
@@ -206,8 +258,9 @@ export async function publishThread(accessToken, userId, creationId) {
       access_token: accessToken,
     });
 
+    // Use 'me' — avoids float64 precision loss for large Threads user IDs.
     const { data } = await axios.post(
-      `https://graph.threads.net/v1.0/${userId}/threads_publish`,
+      `https://graph.threads.net/v1.0/me/threads_publish`,
       params.toString(),
       {
         headers: {
@@ -221,7 +274,11 @@ export async function publishThread(accessToken, userId, creationId) {
     }
 
     const threadId = data.id;
-    const url = `https://www.threads.net/@${userId}/post/${threadId}`;
+    // Build the permalink using username (if available) or a generic threads.net link.
+    // Note: userId is NOT the username — never use userId in the URL path.
+    const url = username
+      ? `https://www.threads.net/@${username}/post/${threadId}`
+      : `https://www.threads.net/t/${threadId}`;
 
     return { id: threadId, url };
   } catch (err) {
@@ -241,6 +298,8 @@ export async function publishThread(accessToken, userId, creationId) {
  */
 export async function createPost(accessToken, userId, text, options = {}) {
   try {
+    const username = options.username || null;
+
     // Step 1: Create media container
     const containerResult = await createMediaContainer(accessToken, userId, text, options);
     
@@ -249,7 +308,7 @@ export async function createPost(accessToken, userId, text, options = {}) {
     }
 
     // Step 2: Publish the container
-    const publishResult = await publishThread(accessToken, userId, containerResult.id);
+    const publishResult = await publishThread(accessToken, userId, containerResult.id, username);
     
     if (publishResult.error) {
       return { error: publishResult.error };

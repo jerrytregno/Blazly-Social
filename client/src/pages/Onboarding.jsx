@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { auth } from '../firebase';
 import { useAuth, api } from '../hooks/useAuth';
+import { getUser, setUser, getUserProfile, setUserProfile, getIntegrations } from '../services/firestore';
 import LoadingScreen from '../components/LoadingScreen';
 import './Onboarding.css';
 
@@ -58,44 +60,40 @@ export default function Onboarding() {
 
   useEffect(() => {
     const load = async () => {
+      const uid = auth.currentUser?.uid || user?.id;
+      if (!uid) return;
       try {
-        const [onboardRes, profileRes, intRes] = await Promise.all([
-          api('/onboarding'),
-          api('/profile'),
-          api('/integrations'),
+        const [userDoc, profileDoc, intData] = await Promise.all([
+          getUser(uid),
+          getUserProfile(uid),
+          getIntegrations(uid),
         ]);
-        if (onboardRes.ok) {
-          const d = await onboardRes.json();
-          const s = d.step || 1;
+        setIntegrations(intData);
+        if (userDoc) {
+          const s = userDoc.onboardingStep ?? 1;
           setStep(s > 4 ? 4 : s);
-          setProfileCompletion(d.profileCompletion || 0);
-          setOnboardingState(d);
+          setProfileCompletion(userDoc.profileCompletion ?? 0);
+          setName(userDoc.name || '');
+          setTimezone(userDoc.timezone || 'UTC');
         }
-        if (profileRes.ok) {
-          const p = await profileRes.json();
-          setName(p.account?.name || '');
-          setTimezone(p.account?.timezone || 'UTC');
-          setBusinessName(p.businessProfile?.businessName || '');
-          setBusinessSummary(p.businessProfile?.businessSummary || '');
-          setWebsiteUrl(p.businessProfile?.websiteUrl || '');
+        if (profileDoc) {
+          setBusinessName(profileDoc.businessName || '');
+          setBusinessSummary(profileDoc.businessSummary || '');
+          setWebsiteUrl(profileDoc.websiteUrl || '');
         }
-        if (intRes.ok) setIntegrations(await intRes.json());
       } catch (_) {}
     };
     if (user) load();
   }, [user]);
 
   const updateStep = async (newStep, skip = false) => {
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
     try {
-      const res = await api('/onboarding', {
-        method: 'PATCH',
-        body: JSON.stringify({ step: newStep, skip }),
-      });
-      if (res.ok) {
-        const d = await res.json();
-        setStep(d.step);
-        setProfileCompletion(d.profileCompletion);
-      }
+      const capped = Math.min(Math.max(newStep, 1), 4);
+      await setUser(uid, { onboardingStep: capped, profileCompletion: Math.round((capped / 4) * 100) });
+      setStep(capped);
+      setProfileCompletion(Math.round((capped / 4) * 100));
     } catch (_) {}
   };
 
@@ -114,20 +112,14 @@ export default function Onboarding() {
   };
 
   const saveStepData = async () => {
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
     try {
       if (step === 1) {
-        await api('/me', {
-          method: 'PATCH',
-          body: JSON.stringify({ name: name.trim(), timezone }),
-        });
+        await setUser(uid, { name: name.trim(), timezone });
       }
       if (step === 2) {
-        await api('/profile', {
-          method: 'PATCH',
-          body: JSON.stringify({
-            businessName: businessName.trim(),
-          }),
-        });
+        await setUserProfile(uid, { businessName: businessName.trim() });
       }
     } catch (_) {}
   };
@@ -142,7 +134,9 @@ export default function Onboarding() {
         body: JSON.stringify({ websiteUrl: websiteUrl.trim() }),
       });
       const data = await res.json();
-      if (res.ok) {
+      if (res.ok && data.businessProfile) {
+        const uid = auth.currentUser?.uid || user?.id;
+        if (uid) await setUserProfile(uid, data.businessProfile);
         setBusinessName(data.businessProfile?.businessName || businessName);
         setBusinessSummary(data.businessProfile?.businessSummary || businessSummary);
       } else {
@@ -157,8 +151,32 @@ export default function Onboarding() {
   const handleConnect = async (platformId) => {
     setIntegrating(platformId);
     try {
-      await api('/auth/session', { method: 'POST' });
-      window.location.href = `/api/auth/integrations/${platformId}`;
+      const res = await api(`/auth/integrations/${platformId}`, {
+        redirect: 'manual',
+        headers: { Accept: 'application/json' },
+      });
+      const data = await res.json().catch(() => ({}));
+      const url = data.redirectUrl || res.headers.get('Location');
+      if (url) {
+        const popup = window.open(url, 'oauth', 'width=600,height=700');
+        if (!popup) window.location.href = url;
+        const onMessage = async (e) => {
+          if (e.data?.type === 'blazly-oauth-callback') {
+            setIntegrating(null);
+            window.removeEventListener('message', onMessage);
+            if (!e.data?.error && e.data?.platform && e.data?.userId) {
+              const { setIntegration } = await import('../services/firestore');
+              await setIntegration(e.data.userId, e.data.platform, e.data);
+              const fresh = await getIntegrations(e.data.userId);
+              setIntegrations(fresh);
+            }
+          }
+        };
+        window.addEventListener('message', onMessage);
+      } else {
+        setIntegrating(null);
+        alert(data.error || 'Failed to start connection.');
+      }
     } catch (_) {
       setIntegrating(null);
       alert('Failed to start connection.');

@@ -1,9 +1,8 @@
 import axios from 'axios';
-import { uploadBuffer } from './firebaseStorage.service.js';
 
 /**
- * Generate image from prompt and save to Firebase Storage. Returns public URL.
- * Requires GEMINI_API_KEY for Gemini image generation.
+ * Generate image from prompt. Returns base64 data URL for client to upload to Storage.
+ * No Firebase Admin SDK / service account needed – client uploads directly.
  */
 export async function generateAndSaveImage(prompt) {
   const safePrompt = String(prompt || '').trim().slice(0, 500);
@@ -16,12 +15,11 @@ export async function generateAndSaveImage(prompt) {
 
   const key = process.env.GEMINI_API_KEY;
 
-  // 1) Gemini image generation
   if (key) {
-    const geminiUrl = await tryGeminiImage(modelPrompt, key);
-    if (geminiUrl) {
-      console.log('[imageGen] SUCCESS - returned URL:', geminiUrl);
-      return { url: geminiUrl };
+    const result = await tryGeminiImage(modelPrompt, key);
+    if (result) {
+      console.log('[imageGen] SUCCESS - returning base64 for client upload');
+      return { base64: result };
     }
   } else {
     console.log('[imageGen] GEMINI_API_KEY not set, skipping');
@@ -75,16 +73,7 @@ async function tryGeminiImageWithModel(prompt, key, modelId) {
       const lastPart = imageParts[imageParts.length - 1];
       const data = lastPart.inlineData?.data || lastPart.inline_data?.data;
       if (!data) return null;
-      const buffer = Buffer.from(data, 'base64');
-      const filename = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.png`;
-
-      const result = await uploadBuffer(buffer, filename, 'image/png');
-      if (result.error) {
-        console.error('[imageGen] Firebase Storage upload failed:', result.error);
-        return null;
-      }
-      console.log('[imageGen] Saved to Firebase:', result.url);
-      return result.url;
+      return `data:image/png;base64,${data}`;
     }
     console.log('[imageGen] No image parts in response for', modelId);
   } catch (err) {

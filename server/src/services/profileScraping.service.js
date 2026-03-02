@@ -7,6 +7,25 @@ import * as knowledgeBaseService from './knowledgeBase.service.js';
 import { calculateProfileCompletion } from './profileCompletion.service.js';
 
 /**
+ * Scrape website + run AI analysis WITHOUT touching Firestore/DB.
+ * Used as fallback when server-side credentials are unavailable.
+ */
+export async function scrapeWebsiteOnly(websiteUrl, customScraperApiUrl = null) {
+  let extractedText;
+  if (customScraperApiUrl) {
+    const { data } = await axios.post(customScraperApiUrl, { url: websiteUrl }, { timeout: 30000 });
+    extractedText = data.extractedText || data.text || (typeof data === 'string' ? data : '');
+  } else {
+    const html = await fetchHtml(websiteUrl);
+    const structured = extractStructuredContent(html);
+    extractedText = structured.extractedText;
+  }
+  const aiResult = await analyzeBrandFromScraped(extractedText, websiteUrl);
+  if (aiResult.error) throw new Error(aiResult.error);
+  return { ...aiResult, websiteUrl, lastScrapedAt: new Date() };
+}
+
+/**
  * Scrape user's own website, run AI brand analysis, update UserProfile.
  * If customScraperApiUrl is set, call that API instead. Expected: POST { url } → { extractedText }
  */

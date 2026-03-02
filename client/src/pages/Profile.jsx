@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { auth } from '../firebase';
 import { useAuth, api } from '../hooks/useAuth';
+import { getUser, setUser, getUserProfile, setUserProfile, getIntegrations } from '../services/firestore';
 import LoadingScreen from '../components/LoadingScreen';
 import KeywordPicker from '../components/KeywordPicker';
 import './Profile.css';
@@ -52,62 +54,69 @@ export default function Profile() {
 
   useEffect(() => {
     const load = async () => {
-      try {
-        const [profileRes, intRes, meRes] = await Promise.all([
-          api('/profile'),
-          api('/integrations'),
-          api('/me'),
-        ]);
-        if (profileRes.ok) {
-          const p = await profileRes.json();
-          setAccount(p.account || {});
-          setBusinessProfile(p.businessProfile);
-          setScraping(p.scraping || {});
-          setName(p.account?.name || '');
-          setTimezone(p.account?.timezone || 'UTC');
-          setBusinessName(p.businessProfile?.businessName || '');
-          setBusinessSummary(p.businessProfile?.businessSummary || '');
-          setBrandTone(p.businessProfile?.brandTone || '');
-          setKeywords(p.businessProfile?.keywords || []);
-          setTargetAudience(p.businessProfile?.targetAudience || '');
-          setValueProposition(p.businessProfile?.valueProposition || '');
-          setWebsiteUrl(p.businessProfile?.websiteUrl || '');
-          setScrapeUrl(p.businessProfile?.websiteUrl || '');
+      const uid = auth.currentUser?.uid || user?.id;
+      if (!uid) return setLoading(false);
+      // Use allSettled so one failed load doesn't prevent others from updating state
+      const [userResult, profileResult, intResult] = await Promise.allSettled([
+        getUser(uid),
+        getUserProfile(uid),
+        getIntegrations(uid),
+      ]);
+      if (intResult.status === 'fulfilled') {
+        const intData = intResult.value || [];
+        setIntegrations(intData);
+        if (intData.length > 0) {
+          api('/profile/optimizer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ integrations: intData }),
+        }).then((r) => r.ok && r.json()).then((d) => d?.platforms && setOptimizerData(d.platforms)).catch(() => {});
         }
-        if (intRes.ok) {
-          const intData = await intRes.json();
-          setIntegrations(intData);
-          if (intData.length > 0) {
-            api('/profile/optimizer').then((r) => r.ok && r.json()).then((d) => d?.platforms && setOptimizerData(d.platforms)).catch(() => {});
-          }
-        }
-        if (meRes.ok) {
-          const m = await meRes.json();
-          setAiInstructions(m.aiInstructions || { global: '', useGlobalForAll: true, platforms: {} });
-        }
-      } catch (_) {}
+      }
+      if (userResult.status === 'fulfilled' && userResult.value) {
+        const userDoc = userResult.value;
+        setAccount({
+          name: userDoc.name || '',
+          email: userDoc.email,
+          timezone: userDoc.timezone || 'UTC',
+          profileCompletion: userDoc.profileCompletion ?? 0,
+          onboardingStep: userDoc.onboardingStep ?? 1,
+        });
+        setName(userDoc.name || '');
+        setTimezone(userDoc.timezone || 'UTC');
+        setAiInstructions(userDoc.aiInstructions || { global: '', useGlobalForAll: true, platforms: {} });
+      }
+      if (profileResult.status === 'fulfilled' && profileResult.value) {
+        const profileDoc = profileResult.value;
+        setBusinessProfile(profileDoc);
+        setBusinessName(profileDoc.businessName || '');
+        setBusinessSummary(profileDoc.businessSummary || '');
+        setBrandTone(profileDoc.brandTone || '');
+        setKeywords(profileDoc.keywords || []);
+        setTargetAudience(profileDoc.targetAudience || '');
+        setValueProposition(profileDoc.valueProposition || '');
+        setWebsiteUrl(profileDoc.websiteUrl || '');
+        setScrapeUrl(profileDoc.websiteUrl || '');
+        setScraping((s) => ({ ...s, lastScrapedAt: profileDoc.lastScrapedAt, competitorCount: 0 }));
+      }
       setLoading(false);
     };
     load();
-  }, []);
+  }, [user?.id]);
 
   const handleSaveAccount = async () => {
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
     setSaving(true);
     try {
-      await api('/me', {
-        method: 'PATCH',
-        body: JSON.stringify({ name: name.trim(), timezone }),
-      });
-      await api('/profile', {
-        method: 'PATCH',
-        body: JSON.stringify({
-          businessName: businessName.trim(),
-          businessSummary: businessSummary.trim(),
-          brandTone: brandTone.trim(),
-          keywords: Array.isArray(keywords) ? keywords : (keywords.split(',').map((k) => k.trim()).filter(Boolean)),
-          targetAudience: targetAudience.trim(),
-          valueProposition: valueProposition.trim(),
-        }),
+      await setUser(uid, { name: name.trim(), timezone });
+      await setUserProfile(uid, {
+        businessName: businessName.trim(),
+        businessSummary: businessSummary.trim(),
+        brandTone: brandTone.trim(),
+        keywords: Array.isArray(keywords) ? keywords : (typeof keywords === 'string' ? keywords.split(',').map((k) => k.trim()).filter(Boolean) : keywords),
+        targetAudience: targetAudience.trim(),
+        valueProposition: valueProposition.trim(),
       });
       setAccount((a) => ({ ...a, name: name.trim(), timezone }));
     } catch (_) {}
@@ -125,16 +134,22 @@ export default function Profile() {
         body: JSON.stringify({ websiteUrl: url }),
       });
       const data = await res.json();
-      if (res.ok) {
-        setBusinessProfile(data.businessProfile);
-        setBusinessName(data.businessProfile?.businessName || '');
-        setBusinessSummary(data.businessProfile?.businessSummary || '');
-        setBrandTone(data.businessProfile?.brandTone || '');
-        setKeywords(data.businessProfile?.keywords || []);
-        setTargetAudience(data.businessProfile?.targetAudience || '');
-        setValueProposition(data.businessProfile?.valueProposition || '');
-        setWebsiteUrl(data.businessProfile?.websiteUrl || url);
-        setScraping((s) => ({ ...s, lastScrapedAt: data.businessProfile?.lastScrapedAt }));
+      if (res.ok && data.businessProfile) {
+        const uid = auth.currentUser?.uid || user?.id;
+        const bp = { ...data.businessProfile, websiteUrl: data.businessProfile.websiteUrl || url };
+        // Always save to client Firestore (handles both normal + clientSave mode)
+        if (uid) {
+          await setUserProfile(uid, bp).catch(() => {});
+        }
+        setBusinessProfile(bp);
+        setBusinessName(bp.businessName || '');
+        setBusinessSummary(bp.businessSummary || '');
+        setBrandTone(bp.brandTone || '');
+        setKeywords(bp.keywords || []);
+        setTargetAudience(bp.targetAudience || '');
+        setValueProposition(bp.valueProposition || '');
+        setWebsiteUrl(bp.websiteUrl || url);
+        setScraping((s) => ({ ...s, lastScrapedAt: bp.lastScrapedAt || new Date() }));
       } else {
         setScrapeError(data.error || 'Scraping failed');
       }
@@ -372,7 +387,11 @@ export default function Profile() {
               onClick={async () => {
                 setOptimizerLoading(true);
                 try {
-                  const r = await api('/profile/optimizer');
+                  const r = await api('/profile/optimizer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ integrations }),
+                  });
                   if (r.ok) {
                     const d = await r.json();
                     setOptimizerData(d.platforms || []);

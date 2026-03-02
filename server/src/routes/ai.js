@@ -1,7 +1,6 @@
 import express from 'express';
 import { generateContent, getSimilarKeywords } from '../services/gemini.js';
 import { generateAndSaveImage } from '../services/imageGen.js';
-import * as generatedImageRepo from '../db/generatedImageRepository.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -14,12 +13,8 @@ router.post('/generate-image', requireAuth, async (req, res) => {
     }
     const result = await generateAndSaveImage(prompt.trim());
     if (result.error) return res.status(400).json(result);
-    const doc = await generatedImageRepo.create({
-      userId: req.user._id,
-      prompt: prompt.trim(),
-      url: result.url,
-    });
-    res.json({ url: result.url, id: doc._id.toString() });
+    // Return base64 – client uploads to Storage (no service account needed)
+    res.json({ base64: result.base64 });
   } catch (err) {
     console.error('Generate image error:', err);
     res.status(500).json({ error: err.message || 'Image generation failed' });

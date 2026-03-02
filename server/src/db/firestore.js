@@ -1,21 +1,17 @@
 /**
- * Firestore database layer - replaces MongoDB.
+ * Firestore database layer - no firebase-admin.
+ * Uses @google-cloud/firestore with Application Default Credentials.
  * All collections: users, userProfiles, posts, integrations, competitors,
  * keywordPolls, keywordMatches, rateLimits, ideaCaches, generatedImages,
  * knowledgeBases, trendInsights, sessions
  */
-import admin from 'firebase-admin';
+import { getFirestore } from '../firebase.js';
+import { Timestamp } from '@google-cloud/firestore';
 
-let _db = null;
-
-export function getDb() {
-  if (!admin.apps.length) {
-    throw new Error('Firebase Admin not initialized. Set FIREBASE_SERVICE_ACCOUNT or FIREBASE_SERVICE_ACCOUNT_PATH in .env');
-  }
-  if (!_db) {
-    _db = admin.firestore();
-  }
-  return _db;
+function getDb() {
+  const db = getFirestore();
+  if (!db) throw new Error('Firestore not initialized. Run: gcloud auth application-default login');
+  return db;
 }
 
 /**
@@ -56,11 +52,11 @@ export function serializeForFirestore(data) {
     Object.keys(obj).forEach((k) => {
       const v = obj[k];
       if (v instanceof Date) {
-        obj[k] = admin.firestore.Timestamp.fromDate(v);
+        obj[k] = Timestamp.fromDate(v);
       } else if (v instanceof Map) {
         obj[k] = Object.fromEntries(v);
         walk(obj[k]);
-      } else if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof admin.firestore.Timestamp)) {
+      } else if (v && typeof v === 'object' && !Array.isArray(v) && !(v && typeof v.toDate === 'function')) {
         walk(v);
       }
     });
@@ -69,11 +65,10 @@ export function serializeForFirestore(data) {
   return copy;
 }
 
+export { getDb };
+
 export async function connectDb() {
-  if (!admin.apps.length) {
-    throw new Error('Firebase Admin not initialized. Ensure FIREBASE_SERVICE_ACCOUNT or FIREBASE_SERVICE_ACCOUNT_PATH is set.');
-  }
-  _db = admin.firestore();
-  _db.settings({ ignoreUndefinedProperties: true });
+  const db = getDb();
+  db.settings({ ignoreUndefinedProperties: true });
   console.log('Firestore connected');
 }

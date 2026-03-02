@@ -206,23 +206,77 @@ export async function analyzeCompetitorSocialFromData(competitorName, platformDa
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
     const prompt = `
-You are a social media analyst. Based on the following scraped data from ${competitorName}'s social profiles, write a brief activity report.
+You are an expert social media analyst and competitive intelligence specialist.
+Analyze the following scraped data from "${competitorName}"'s social media profiles and generate a comprehensive engagement report.
 
-PLATFORM DATA (followers, posts, etc. - may be partial):
+SCRAPED PLATFORM DATA:
 ${JSON.stringify(platformData, null, 2)}
 
-Return JSON ONLY:
+Based on the data above (followers, posts, descriptions, raw page snippets, visible dates, sample content), produce a detailed competitive social media report.
+
+Return ONLY valid JSON in this exact structure:
 {
-  "summary": "2-4 sentence overview of how active they are across platforms, engagement level, and notable patterns",
-  "postFrequency": "e.g. Daily, 2-3x/week, Weekly, Low activity, Unknown",
-  "engagementLevel": "e.g. High, Medium, Low, Unknown - based on follower/post ratios if available"
+  "summary": "3-5 sentence executive summary covering their social media presence, most active platforms, and overall strategy",
+  "postFrequency": "Estimated posting frequency e.g. 'Daily on LinkedIn, 3x/week on Instagram', '2-3x/week', 'Unknown'",
+  "engagementLevel": "High / Medium / Low / Unknown — with brief reasoning if data allows",
+  "audienceInsights": "What kind of audience they appear to target based on content, bio, and keywords found",
+  "contentThemes": ["Theme 1 based on descriptions/snippets", "Theme 2", "Theme 3"],
+  "bestPostingTimes": ["Morning (9-11am)", "Weekday evenings", "Monday-Wednesday preferred"],
+  "platformBreakdown": {
+    "linkedin": {
+      "followers": 0,
+      "postsCount": 0,
+      "estimatedEngagementRate": "e.g. 2-3%",
+      "contentStyle": "Professional articles and thought leadership",
+      "activityLevel": "High / Medium / Low / No data"
+    },
+    "instagram": {
+      "followers": 0,
+      "postsCount": 0,
+      "estimatedEngagementRate": "e.g. 1-2%",
+      "contentStyle": "Visual brand storytelling and reels",
+      "activityLevel": "High / Medium / Low / No data"
+    },
+    "facebook": {
+      "followers": 0,
+      "postsCount": 0,
+      "estimatedEngagementRate": "",
+      "contentStyle": "",
+      "activityLevel": ""
+    },
+    "twitter": {
+      "followers": 0,
+      "postsCount": 0,
+      "estimatedEngagementRate": "",
+      "contentStyle": "",
+      "activityLevel": ""
+    },
+    "threads": {
+      "followers": 0,
+      "postsCount": 0,
+      "estimatedEngagementRate": "",
+      "contentStyle": "",
+      "activityLevel": ""
+    }
+  },
+  "ideaGenerationHints": [
+    "Content idea inspired by competitor gaps or strengths",
+    "Another idea targeting their audience differently",
+    "A third unique angle your brand could exploit"
+  ],
+  "competitorStrengths": ["Strength 1 from social presence", "Strength 2"],
+  "competitorWeaknesses": ["Gap or weakness 1", "Gap or weakness 2"],
+  "recommendedActions": ["Action 1 to outperform this competitor", "Action 2", "Action 3"]
 }
+
+Only include platform data for platforms that have a URL or data. Use "No data" for activityLevel if nothing was found for that platform.
+If data is unavailable for a field, use your best inference or write "Unknown" / "Insufficient data".
 `;
 
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
-        temperature: 0.4,
+        temperature: 0.5,
         responseMimeType: 'application/json',
       },
     });
@@ -231,7 +285,19 @@ Return JSON ONLY:
     return JSON.parse(text);
   } catch (error) {
     console.error('Gemini Social Activity Analysis Error:', error);
-    return { summary: 'Analysis unavailable.', postFrequency: 'Unknown', engagementLevel: 'Unknown' };
+    return {
+      summary: 'Analysis unavailable at this time.',
+      postFrequency: 'Unknown',
+      engagementLevel: 'Unknown',
+      audienceInsights: '',
+      contentThemes: [],
+      bestPostingTimes: [],
+      platformBreakdown: {},
+      ideaGenerationHints: [],
+      competitorStrengths: [],
+      competitorWeaknesses: [],
+      recommendedActions: [],
+    };
   }
 }
 

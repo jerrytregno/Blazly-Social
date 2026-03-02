@@ -67,7 +67,45 @@ export async function scrapeAndAnalyzeCompetitor(userId, competitorName, competi
   );
 
   // Store in knowledge base
-  await knowledgeBaseService.upsertCompetitor(userId, competitorUrl, structured.extractedText, structured);
+  try { await knowledgeBaseService.upsertCompetitor(userId, competitorUrl, structured.extractedText, structured); } catch (_) {}
 
   return competitor;
+}
+
+/**
+ * Analyze competitor without any DB access (used when server Firestore credentials unavailable).
+ * Returns a plain object with analysis results - client saves to Firestore.
+ */
+export async function analyzeCompetitorOnly(competitorName, competitorUrl, socialLinks = null) {
+  const html = await fetchHtml(competitorUrl);
+  const structured = extractStructuredContent(html);
+
+  const aiAnalysis = await analyzeCompetitorFromScraped(
+    structured.extractedText,
+    competitorName,
+    competitorUrl,
+    ''
+  );
+
+  if (aiAnalysis.error) throw new Error(aiAnalysis.error);
+
+  const socialLinksObj = socialLinks && typeof socialLinks === 'object'
+    ? Object.fromEntries(Object.entries(socialLinks).filter(([, v]) => v && typeof v === 'string'))
+    : {};
+
+  let socialActivityReport = null;
+  if (Object.keys(socialLinksObj).length > 0) {
+    try {
+      socialActivityReport = await analyzeCompetitorSocialActivity(null, competitorName, socialLinksObj);
+    } catch (_) {}
+  }
+
+  return {
+    competitorName,
+    competitorUrl,
+    aiAnalysis,
+    socialLinks: socialLinksObj,
+    socialActivityReport,
+    lastScrapedAt: new Date().toISOString(),
+  };
 }

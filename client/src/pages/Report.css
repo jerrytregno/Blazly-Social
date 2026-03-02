@@ -115,6 +115,27 @@
   cursor: not-allowed;
 }
 
+.report-download {
+  align-self: flex-end;
+  padding: 0.5rem 1rem;
+  background: var(--primary, #0a66c2);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.report-download:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.report-download:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .report-debug {
   align-self: flex-end;
   padding: 0.5rem 0.75rem;
@@ -390,4 +411,63 @@
   margin: 1rem 0 0 0;
   font-size: 0.9rem;
   color: var(--text-muted);
+}
+
+.report-analytics-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 1rem 2rem;
+  padding: 0.75rem 1rem;
+  background: color-mix(in srgb, #3b82f6 10%, var(--bg));
+  border: 1px solid #3b82f6;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.report-analytics-hint-btn {
+  padding: 0.35rem 0.9rem;
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.report-analytics-hint-btn:hover {
+  background: #2563eb;
+}
+
+.report-analytics-hint-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.report-sync {
+  padding: 0.45rem 1rem;
+  background: #059669;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.report-sync:hover { background: #047857; }
+.report-sync:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.report-sync-result {
+  margin: 0.75rem 2rem;
+  padding: 0.65rem 1rem;
+  background: color-mix(in srgb, #059669 12%, var(--bg));
+  border: 1px solid #059669;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  color: var(--text);
 }

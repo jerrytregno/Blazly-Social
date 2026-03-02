@@ -1,8 +1,157 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { auth } from '../firebase';
 import { api } from '../hooks/useAuth';
+import { getCompetitors, saveCompetitor } from '../services/firestore';
 import LoadingScreen from '../components/LoadingScreen';
 import './Competitors.css';
+
+const PLATFORM_ICONS = { linkedin: '💼', instagram: '📸', facebook: '📘', twitter: '🐦', threads: '🧵' };
+
+function engagementClass(level = '') {
+  const l = level.toLowerCase();
+  if (l.includes('high')) return 'high';
+  if (l.includes('medium') || l.includes('moderate')) return 'medium';
+  if (l.includes('low')) return 'low';
+  return '';
+}
+
+function SocialActivityReport({ report }) {
+  if (!report) return null;
+  const {
+    summary, postFrequency, engagementLevel, audienceInsights,
+    contentThemes = [], bestPostingTimes = [], platformBreakdown = {},
+    ideaGenerationHints = [], competitorStrengths = [], competitorWeaknesses = [],
+    recommendedActions = [],
+  } = report;
+
+  const activePlatforms = Object.entries(platformBreakdown).filter(
+    ([, d]) => d && d.activityLevel && d.activityLevel !== 'No data' && d.activityLevel !== ''
+  );
+
+  return (
+    <div className="competitors-activity-report">
+      <h4 className="competitors-activity-report-title">📊 Social Media Report</h4>
+      {summary && <p className="competitors-activity-summary">{summary}</p>}
+
+      <div className="competitors-activity-meta">
+        {postFrequency && postFrequency !== 'Unknown' && (
+          <span className="competitors-activity-badge">🗓 {postFrequency}</span>
+        )}
+        {engagementLevel && engagementLevel !== 'Unknown' && (
+          <span className={`competitors-activity-badge ${engagementClass(engagementLevel)}`}>
+            📈 Engagement: {engagementLevel}
+          </span>
+        )}
+      </div>
+
+      {activePlatforms.length > 0 && (
+        <>
+          <p className="competitors-activity-section-label">Platform Breakdown</p>
+          <div className="competitors-platform-grid">
+            {activePlatforms.map(([platform, data]) => (
+              <div key={platform} className="competitors-platform-card">
+                <div className="competitors-platform-card-name">
+                  {PLATFORM_ICONS[platform] || '🔗'} {platform}
+                </div>
+                {data.followers > 0 && (
+                  <div className="competitors-platform-metric">
+                    <span>Followers</span>
+                    <span>{Number(data.followers).toLocaleString()}</span>
+                  </div>
+                )}
+                {data.postsCount > 0 && (
+                  <div className="competitors-platform-metric">
+                    <span>Posts</span>
+                    <span>{Number(data.postsCount).toLocaleString()}</span>
+                  </div>
+                )}
+                {data.estimatedEngagementRate && data.estimatedEngagementRate !== 'Unknown' && (
+                  <div className="competitors-platform-metric">
+                    <span>Eng. Rate</span>
+                    <span>{data.estimatedEngagementRate}</span>
+                  </div>
+                )}
+                {data.activityLevel && (
+                  <div className="competitors-platform-metric">
+                    <span>Activity</span>
+                    <span>{data.activityLevel}</span>
+                  </div>
+                )}
+                {data.contentStyle && (
+                  <div className="competitors-platform-style">{data.contentStyle}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {contentThemes.length > 0 && (
+        <>
+          <p className="competitors-activity-section-label">Content Themes</p>
+          <div className="competitors-themes">
+            {contentThemes.map((t, i) => (
+              <span key={i} className="competitors-theme-tag">{t}</span>
+            ))}
+          </div>
+        </>
+      )}
+
+      {audienceInsights && (
+        <>
+          <p className="competitors-activity-section-label">Audience Insights</p>
+          <p className="competitors-activity-summary" style={{ marginBottom: 0 }}>{audienceInsights}</p>
+        </>
+      )}
+
+      {bestPostingTimes.length > 0 && (
+        <>
+          <p className="competitors-activity-section-label">Best Posting Times</p>
+          <ul className="competitors-insights-list">
+            {bestPostingTimes.map((t, i) => <li key={i}>{t}</li>)}
+          </ul>
+        </>
+      )}
+
+      {competitorStrengths.length > 0 && (
+        <>
+          <p className="competitors-activity-section-label">Their Strengths</p>
+          <ul className="competitors-insights-list">
+            {competitorStrengths.map((s, i) => <li key={i}>{s}</li>)}
+          </ul>
+        </>
+      )}
+
+      {competitorWeaknesses.length > 0 && (
+        <>
+          <p className="competitors-activity-section-label">Their Weaknesses / Gaps</p>
+          <ul className="competitors-insights-list">
+            {competitorWeaknesses.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </>
+      )}
+
+      {ideaGenerationHints.length > 0 && (
+        <>
+          <p className="competitors-activity-section-label">Content Ideas to Outperform Them</p>
+          <ul className="competitors-insights-list">
+            {ideaGenerationHints.map((h, i) => <li key={i}>{h}</li>)}
+          </ul>
+        </>
+      )}
+
+      {recommendedActions.length > 0 && (
+        <>
+          <p className="competitors-activity-section-label">Recommended Actions</p>
+          <ul className="competitors-insights-list">
+            {recommendedActions.map((a, i) => <li key={i}>{a}</li>)}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
 
 const SECTIONS = [
   { key: 'ideology', label: 'What They Do' },
@@ -18,11 +167,14 @@ const SECTIONS = [
   { key: 'opportunityGap', label: 'Opportunity Gap' },
 ];
 
+const US_VS_THEM_KEYS = ['strengthsVsYou', 'opportunityGap'];
+
 const SOCIAL_PLATFORMS = [
   { id: 'linkedin', label: 'LinkedIn', placeholder: 'https://linkedin.com/company/...' },
   { id: 'instagram', label: 'Instagram', placeholder: 'https://instagram.com/...' },
   { id: 'facebook', label: 'Facebook', placeholder: 'https://facebook.com/...' },
   { id: 'twitter', label: 'X (Twitter)', placeholder: 'https://x.com/...' },
+  { id: 'threads', label: 'Threads', placeholder: 'https://threads.net/...' },
 ];
 
 export default function Competitors() {
@@ -32,7 +184,7 @@ export default function Competitors() {
   const [addModal, setAddModal] = useState(false);
   const [competitorName, setCompetitorName] = useState('');
   const [competitorUrl, setCompetitorUrl] = useState('');
-  const [socialLinks, setSocialLinks] = useState({ linkedin: '', instagram: '', facebook: '', twitter: '' });
+  const [socialLinks, setSocialLinks] = useState({ linkedin: '', instagram: '', facebook: '', twitter: '', threads: '' });
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState('');
 
@@ -42,6 +194,18 @@ export default function Competitors() {
         const res = await api('/profile/competitors');
         if (res.ok) {
           const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            setCompetitors(data);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch (_) {}
+      // Fallback: load from client Firestore
+      try {
+        const uid = auth.currentUser?.uid;
+        if (uid) {
+          const data = await getCompetitors(uid);
           setCompetitors(Array.isArray(data) ? data : []);
         }
       } catch (_) {}
@@ -68,11 +232,19 @@ export default function Competitors() {
       });
       const data = await res.json();
       if (res.ok) {
-        setCompetitors((prev) => [data.competitor, ...prev]);
+        let comp = data.competitor;
+        // Always persist to client Firestore as source of truth (server may not have credentials)
+        try {
+          const uid = auth.currentUser?.uid;
+          if (uid) comp = await saveCompetitor(uid, comp);
+        } catch (saveErr) {
+          console.warn('Client Firestore save failed:', saveErr.message);
+        }
+        setCompetitors((prev) => [comp, ...prev]);
         setAddModal(false);
         setCompetitorName('');
         setCompetitorUrl('');
-        setSocialLinks({ linkedin: '', instagram: '', facebook: '', twitter: '' });
+        setSocialLinks({ linkedin: '', instagram: '', facebook: '', twitter: '', threads: '' });
       } else {
         setAddError(data.error || 'Failed to add competitor');
       }
@@ -117,14 +289,7 @@ export default function Competitors() {
                   </div>
                 )}
                 {comp.socialActivityReport && (
-                  <div className="competitors-activity-report">
-                    <h4>Social Activity Report</h4>
-                    <p className="competitors-activity-summary">{comp.socialActivityReport.summary}</p>
-                    <div className="competitors-activity-meta">
-                      <span>Post frequency: {comp.socialActivityReport.postFrequency}</span>
-                      <span>Engagement: {comp.socialActivityReport.engagementLevel}</span>
-                    </div>
-                  </div>
+                  <SocialActivityReport report={comp.socialActivityReport} />
                 )}
                 {comp.lastScrapedAt && (
                   <span className="competitors-scraped">
@@ -133,8 +298,24 @@ export default function Competitors() {
                 )}
               </div>
 
+              {US_VS_THEM_KEYS.some((k) => comp.aiAnalysis?.[k]) && (
+                <div className="competitors-us-vs-them">
+                  <h3 className="competitors-us-vs-them-title">Us vs Them — Key Differences</h3>
+                  {US_VS_THEM_KEYS.map((key) => {
+                    const val = comp.aiAnalysis?.[key];
+                    if (!val) return null;
+                    const label = SECTIONS.find((s) => s.key === key)?.label || key;
+                    return (
+                      <div key={key} className="competitors-us-vs-them-item">
+                        <h4>{label}</h4>
+                        <p>{typeof val === 'string' ? val : JSON.stringify(val)}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div className="competitors-sections">
-                {SECTIONS.map(({ key, label }) => {
+                {SECTIONS.filter((s) => !US_VS_THEM_KEYS.includes(s.key)).map(({ key, label }) => {
                   const val = comp.aiAnalysis?.[key];
                   if (!val) return null;
                   const isArray = Array.isArray(val);

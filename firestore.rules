@@ -1,0 +1,54 @@
+rules_version = '2';
+
+// Firestore security rules – adjust to your auth model.
+// Server uses @google-cloud/firestore with Application Default Credentials (no client SDK).
+// If you use Firestore from the client, these rules apply.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users – server-managed; restrict client access if needed
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    match /userProfiles/{docId} {
+      allow read, write: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+    }
+    match /posts/{postId} {
+      allow read, write: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+    }
+    match /integrations/{docId} {
+      allow read, write: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+    }
+    match /competitors/{docId} {
+      allow read, write: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+    }
+    match /keywordPolls/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /keywordMatches/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /rateLimits/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /ideaCaches/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /generatedImages/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /knowledgeBases/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /trendInsights/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /sessions/{docId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

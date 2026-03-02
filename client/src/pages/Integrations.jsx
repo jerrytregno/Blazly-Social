@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '../hooks/useAuth';
+import { useSearchParams } from 'react-router-dom';
+import { auth } from '../firebase';
+import { api, useAuth } from '../hooks/useAuth';
+import { getIntegrations, setIntegration } from '../services/firestore';
 import './Integrations.css';
 
 const PLATFORMS = [
@@ -57,22 +59,43 @@ const PLATFORMS = [
 ];
 
 export default function Integrations() {
-  const navigate = useNavigate();
+  const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [disconnecting, setDisconnecting] = useState(null);
+  const [connecting, setConnecting] = useState(null);
   const error = searchParams.get('error');
   const success = searchParams.get('success');
 
   useEffect(() => {
     loadIntegrations();
+  }, [user?.id]);
+
+  useEffect(() => {
+    const onMessage = (e) => {
+      if (e.data?.type === 'blazly-oauth-callback') {
+        if (e.data.error) {
+          alert(e.data.error);
+          return;
+        }
+        const { platform, userId, ...data } = e.data;
+        if (platform && userId) {
+          setIntegration(userId, platform, data).then(() => {
+            loadIntegrations();
+            window.dispatchEvent(new CustomEvent('integrations-changed'));
+          });
+        }
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
   }, []);
 
   const loadIntegrations = async () => {
+    if (!auth.currentUser) return;
     try {
-      const res = await api('/integrations');
-      const data = await res.json();
+      const data = await getIntegrations(auth.currentUser.uid);
       setIntegrations(data);
     } catch (err) {
       console.error('Error loading integrations:', err);
@@ -82,26 +105,44 @@ export default function Integrations() {
   };
 
   const handleConnect = async (platformId) => {
+    if (!auth.currentUser) {
+      alert('Please sign in first');
+      return;
+    }
+    if (connecting === platformId) return; // Prevent double-click
+    setConnecting(platformId);
     try {
-      await api('/auth/session', { method: 'POST' });
-      window.location.href = `/api/auth/integrations/${platformId}`;
+      const res = await api(`/auth/integrations/${platformId}`, {
+        redirect: 'manual',
+        headers: { Accept: 'application/json' },
+      });
+      if (res.status === 401) {
+        alert('Session expired. Please sign in again.');
+        window.location.href = '/?next=' + encodeURIComponent('/integrations');
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      const url = data.redirectUrl || res.headers.get('Location');
+      if (url) {
+        const popup = window.open(url, `oauth_${platformId}`, 'width=600,height=700');
+        if (!popup) alert('Popup blocked. Please allow popups for this site.');
+      } else {
+        alert(data.error || 'Failed to start connection. Please try again.');
+      }
     } catch (_) {
       alert('Failed to start connection. Please ensure you are logged in.');
+    } finally {
+      setConnecting(null);
     }
   };
 
-  const handleDisconnect = async (integrationId, platformName) => {
-    if (!confirm(`Are you sure you want to disconnect ${platformName}?`)) {
-      return;
-    }
-
-    setDisconnecting(integrationId);
+  const handleDisconnect = async (integration, platform) => {
+    if (!confirm(`Are you sure you want to disconnect ${platform.name}?`)) return;
+    setDisconnecting(integration.id || integration._id);
     try {
-      const res = await api(`/integrations/${integrationId}`, { method: 'DELETE' });
-      if (res.ok) {
-        await loadIntegrations();
-        window.dispatchEvent(new CustomEvent('integrations-changed'));
-      }
+      await setIntegration(auth.currentUser.uid, platform.id, { isActive: false });
+      await loadIntegrations();
+      window.dispatchEvent(new CustomEvent('integrations-changed'));
     } catch (err) {
       console.error('Error disconnecting:', err);
     } finally {
@@ -163,7 +204,7 @@ export default function Integrations() {
                     <span className="integrations__status integrations__status--connected">Connected</span>
                     <button
                       className="integrations__button integrations__button--disconnect"
-                      onClick={() => handleDisconnect(integration.id || integration._id, platform.name)}
+                      onClick={() => handleDisconnect(integration, platform)}
                       disabled={isDisconnecting}
                     >
                       {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
@@ -173,8 +214,9 @@ export default function Integrations() {
                   <button
                     className="integrations__button integrations__button--connect"
                     onClick={() => handleConnect(platform.id)}
+                    disabled={connecting === platform.id}
                   >
-                    Connect
+                    {connecting === platform.id ? 'Opening…' : 'Connect'}
                   </button>
                 )}
               </div>

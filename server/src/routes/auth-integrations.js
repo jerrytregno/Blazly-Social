@@ -3,16 +3,33 @@ import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
-import * as integrationRepo from '../db/repositories/integrationRepository.js';
 import { requireAuth } from '../middleware/auth.js';
+import * as integrationRepo from '../db/repositories/integrationRepository.js';
 import { getMemberId } from '../services/linkedin.js';
 import { verifyFacebookToken, getPages, exchangeToken } from '../services/facebook.js';
 import { generatePKCEChallenge, exchangeOAuth2Code, verifyTwitterCredentials, getOAuth1RequestToken, exchangeOAuth1AccessToken } from '../services/twitter.js';
-import { exchangeCodeForToken, getThreadsUser } from '../services/threads.js';
+import { exchangeCodeForToken, exchangeForLongLivedToken as exchangeThreadsLongLivedToken, getThreadsUser } from '../services/threads.js';
 import { exchangeCodeForToken as exchangeInstagramCode, exchangeForLongLivedToken, getFacebookUser, getPagesWithInstagram, getInstagramAccount, exchangeInstagramLoginCode } from '../services/instagram.js';
 
 const router = Router();
 const { linkedin, frontendUrl } = config;
+
+// Helper: render HTML that postMessages integration to opener (for popup OAuth - no Firestore on server)
+function renderOAuthCallback(res, integration, errorMsg) {
+  const data = errorMsg ? { error: errorMsg } : integration;
+  const html = `<!DOCTYPE html><html><head><title>Connecting...</title></head><body>
+<script>
+(function(){
+  var d = ${JSON.stringify(data)};
+  if (window.opener) {
+    window.opener.postMessage({ type: 'blazly-oauth-callback', ...d }, '*');
+  }
+  window.close();
+})();
+</script><p>${errorMsg ? 'Error: ' + errorMsg : 'Connected! Closing...'}</p></body></html>`;
+  res.setHeader('Content-Type', 'text/html');
+  res.send(html);
+}
 
 // Instagram callback - NO auth (receives redirect from Instagram with no session)
 router.get('/instagram/callback', async (req, res) => {
@@ -21,7 +38,7 @@ router.get('/instagram/callback', async (req, res) => {
   console.log('Instagram callback received:', { hasCode: !!code, stateLen: state?.length, error });
 
   if (error) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(error_reason || error)}`);
+    return renderOAuthCallback(res, null, error_reason || error);
   }
 
   let savedUserId = null;
@@ -33,11 +50,11 @@ router.get('/instagram/callback', async (req, res) => {
   }
   if (!savedUserId) {
     console.error('Instagram callback: invalid/expired state');
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent('Connection timed out. Please try connecting again from the dashboard.')}`);
+    return renderOAuthCallback(res, null, 'Connection timed out. Please try again.');
   }
 
   if (!code) {
-    return res.redirect(`${frontendUrl}/home?error=missing_code`);
+    return renderOAuthCallback(res, null, 'Missing authorization code');
   }
 
   try {
@@ -45,7 +62,7 @@ router.get('/instagram/callback', async (req, res) => {
     const tokenResult = await exchangeInstagramLoginCode(code, config.instagram.redirectUri);
 
     if (tokenResult.error) {
-      return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(tokenResult.error)}`);
+      return renderOAuthCallback(res, null, tokenResult.error);
     }
 
     const accessToken = tokenResult.access_token;
@@ -59,61 +76,40 @@ router.get('/instagram/callback', async (req, res) => {
       platformUserId: instagramUserId,
       platformUsername: `instagram_user_${instagramUserId}`,
       accessToken,
-      tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString(),
       profile: { name: instagramUserId, username: `instagram_user_${instagramUserId}` },
       isActive: true,
-      lastUsedAt: new Date(),
+      lastUsedAt: new Date().toISOString(),
     };
 
-    await integrationRepo.findOneAndUpdate(
-      { userId: savedUserId, platform: 'instagram' },
-      integrationData,
-      { upsert: true, new: true }
-    );
-
     console.log('Instagram integration successful');
-    res.redirect(`${frontendUrl}/home?integration=instagram&status=connected`);
+    renderOAuthCallback(res, integrationData);
   } catch (err) {
     console.error('Instagram callback error:', err);
     const msg = err.response?.data?.error?.message || err.message;
-    res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(msg)}`);
+    renderOAuthCallback(res, null, msg);
   }
 });
 
-// All other integration routes require authentication
-router.use(requireAuth);
-
-// LinkedIn Integration
-router.get('/linkedin', (req, res) => {
-  const state = uuidv4();
-  req.session = req.session || {};
-  req.session.linkedinOAuthState = state;
-  req.session.linkedinUserId = req.user._id;
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: linkedin.clientId,
-    redirect_uri: `${frontendUrl}/api/auth/integrations/linkedin/callback`,
-    state,
-    scope: linkedin.scope,
-  });
-  res.redirect(`https://www.linkedin.com/oauth/v2/authorization?${params}`);
-});
-
+// LinkedIn callback - NO auth (receives redirect from LinkedIn with no session; userId in state JWT)
 router.get('/linkedin/callback', async (req, res) => {
   const { code, state, error, error_description } = req.query;
   if (error) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(error_description || error)}`);
+    return renderOAuthCallback(res, null, error_description || error);
   }
-  const savedState = req.session?.linkedinOAuthState;
-  const savedUserId = req.session?.linkedinUserId;
-  if (!savedState || savedState !== state || !savedUserId) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent('Connection timed out. Please try connecting again from the dashboard.')}`);
+  let savedUserId = null;
+  try {
+    const decoded = jwt.verify(state, config.jwt.secret);
+    savedUserId = decoded?.userId;
+  } catch (_) {}
+  if (!savedUserId) {
+    return renderOAuthCallback(res, null, 'Connection timed out. Please try again.');
   }
   if (!code) {
-    return res.redirect(`${frontendUrl}/integrations?error=missing_code`);
+    return renderOAuthCallback(res, null, 'Missing authorization code');
   }
   if (!linkedin.clientSecret) {
-    return res.redirect(`${frontendUrl}/home?error=server_config`);
+    return renderOAuthCallback(res, null, 'Server configuration error');
   }
   try {
     const { data } = await axios.post(
@@ -140,7 +136,7 @@ router.get('/linkedin/callback', async (req, res) => {
       platformUserId: linkedinId,
       accessToken,
       refreshToken: data.refresh_token || undefined,
-      tokenExpiresAt,
+      tokenExpiresAt: tokenExpiresAt.toISOString(),
       profile: profile
         ? {
           name: `${profile.given_name || ''} ${profile.family_name || ''}`.trim() || profile.localizedFirstName || 'LinkedIn User',
@@ -149,59 +145,43 @@ router.get('/linkedin/callback', async (req, res) => {
         }
         : undefined,
       isActive: true,
-      lastUsedAt: new Date(),
+      lastUsedAt: new Date().toISOString(),
     };
 
-    await integrationRepo.findOneAndUpdate(
-      { userId: savedUserId, platform: 'linkedin' },
-      integrationData,
-      { upsert: true, new: true }
-    );
-
-    delete req.session.linkedinOAuthState;
-    delete req.session.linkedinUserId;
-    req.session.save(() => {
-      res.redirect(`${frontendUrl}/home?integration=linkedin&status=connected`);
-    });
+    renderOAuthCallback(res, integrationData);
   } catch (err) {
     const msg = err.response?.data?.error_description || err.message;
-    res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(msg)}`);
+    renderOAuthCallback(res, null, msg);
   }
 });
 
-// Facebook Integration
-router.get('/facebook', (req, res) => {
-  const state = uuidv4();
-  req.session = req.session || {};
-  req.session.facebookOAuthState = state;
-  req.session.facebookUserId = req.user._id;
+// Helper: return redirect URL as JSON when client wants it (fetch with redirect:'manual' can't read Location)
+function wantsJson(req) {
+  return req.get('Accept')?.includes('application/json') || req.get('X-Popup-OAuth') === '1';
+}
 
-  const params = new URLSearchParams({
-    client_id: config.facebook.appId,
-    redirect_uri: `${frontendUrl}/api/auth/integrations/facebook/callback`,
-    state,
-    scope: 'public_profile,email,pages_show_list,pages_read_engagement,pages_manage_engagement,pages_manage_posts,pages_read_user_content,ads_read,instagram_basic,instagram_manage_insights',
-    response_type: 'code',
-  });
-
-  res.redirect(`https://www.facebook.com/v18.0/dialog/oauth?${params}`);
-});
-
+// Facebook callback - NO auth (receives redirect from Facebook with no session)
+// Uses JWT in state to identify user instead of session cookies
 router.get('/facebook/callback', async (req, res) => {
   const { code, state, error, error_reason } = req.query;
 
   if (error) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(error_reason || error)}`);
+    return renderOAuthCallback(res, null, error_reason || error);
   }
 
-  const savedState = req.session?.facebookOAuthState;
-  const savedUserId = req.session?.facebookUserId;
-  if (!savedState || savedState !== state || !savedUserId) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent('Connection timed out. Please try connecting again from the dashboard.')}`);
+  let savedUserId = null;
+  if (state) {
+    try {
+      const decoded = jwt.verify(state, config.jwt.secret);
+      savedUserId = decoded?.userId;
+    } catch (_) {}
+  }
+  if (!savedUserId) {
+    return renderOAuthCallback(res, null, 'Connection timed out. Please try connecting again from the dashboard.');
   }
 
   if (!code) {
-    return res.redirect(`${frontendUrl}/integrations?error=missing_code`);
+    return renderOAuthCallback(res, null, 'Missing authorization code');
   }
 
   try {
@@ -221,137 +201,229 @@ router.get('/facebook/callback', async (req, res) => {
 
     const profile = await verifyFacebookToken(accessToken);
     if (!profile) {
-      return res.redirect(`${frontendUrl}/home?error=invalid_token`);
+      return renderOAuthCallback(res, null, 'Invalid Facebook token');
     }
 
     const { id: facebookId, name, picture } = profile;
     const pages = await getPages(accessToken);
 
-    req.session.facebookAccessToken = accessToken;
-    req.session.facebookId = facebookId;
-    req.session.facebookProfile = { name, picture };
-    req.session.facebookPages = pages;
-    req.session.facebookTokenExpiresAt = new Date(Date.now() + expiresIn * 1000);
-    req.session.facebookUserId = savedUserId;
-    delete req.session.facebookOAuthState;
-
-    req.session.save(() => {
-      res.redirect(`${frontendUrl}/integrations/facebook/select-page`);
-    });
-  } catch (err) {
-    const msg = err.response?.data?.error?.message || err.message;
-    res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(msg)}`);
-  }
-});
-
-router.get('/facebook/pages', requireAuth, (req, res) => {
-  if (!req.session.facebookPages) {
-    return res.status(401).json({ error: 'No Facebook session found. Please sign in again.' });
-  }
-  res.json({ pages: req.session.facebookPages });
-});
-
-router.post('/facebook/select-page', requireAuth, async (req, res) => {
-  const { pageId } = req.body;
-  const savedUserId = req.session?.facebookUserId;
-
-  if (!req.session.facebookAccessToken || !req.session.facebookId || !savedUserId) {
-    return res.status(401).json({ error: 'No Facebook session found. Please sign in again.' });
-  }
-
-  if (!pageId) {
-    return res.status(400).json({ error: 'Page ID is required' });
-  }
-
-  const pages = req.session.facebookPages || [];
-  const selectedPage = pages.find(p => p.id === pageId);
-
-  if (!selectedPage) {
-    return res.status(400).json({ error: 'Page not found' });
-  }
-
-  try {
-    const { id: facebookId, name, picture } = req.session.facebookProfile;
-    const accessToken = req.session.facebookAccessToken;
-    const tokenExpiresAt = req.session.facebookTokenExpiresAt;
+    // Auto-use the first page - no separate page selection step needed
+    const firstPage = pages?.[0] || null;
+    const pageAccessToken = firstPage?.access_token || accessToken;
+    const pageId = firstPage?.id || null;
+    const pageName = firstPage?.name || name;
+    const igAccount = firstPage?.instagram_business_account;
 
     const integrationData = {
       userId: savedUserId,
       platform: 'facebook',
       platformUserId: facebookId,
+      platformUsername: pageName || name || facebookId,
       accessToken,
-      tokenExpiresAt,
-      facebookPageId: selectedPage.id,
-      facebookPageAccessToken: selectedPage.access_token,
-      facebookPageName: selectedPage.name,
-      profile: {
-        name: name || 'Facebook User',
-        username: facebookId,
-        profilePicture: picture,
-      },
+      tokenExpiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+      facebookPageId: pageId,
+      facebookPageAccessToken: pageAccessToken,
+      facebookPageName: pageName,
+      instagramBusinessAccountId: igAccount?.id || null,
+      instagramPageAccessToken: igAccount?.id ? pageAccessToken : null,
+      profile: { name: pageName || name || 'Facebook User', picture: picture?.data?.url || picture },
       isActive: true,
-      lastUsedAt: new Date(),
+      lastUsedAt: new Date().toISOString(),
     };
 
-    await integrationRepo.findOneAndUpdate(
-      { userId: savedUserId, platform: 'facebook' },
-      integrationData,
-      { upsert: true, new: true }
-    );
-
-    // If the selected page has an Instagram Business Account, create Instagram integration
-    // for hashtag search (requires Instagram Public Content Access + instagram_basic)
-    const igAccount = selectedPage.instagram_business_account;
-    if (igAccount?.id && selectedPage.access_token) {
-      await integrationRepo.findOneAndUpdate(
-        { userId: savedUserId, platform: 'instagram' },
-        {
-          userId: savedUserId,
-          platform: 'instagram',
-          platformUserId: igAccount.id,
-          platformUsername: igAccount.username || `ig_${igAccount.id}`,
-          accessToken: selectedPage.access_token,
-          instagramBusinessAccountId: igAccount.id,
-          instagramPageAccessToken: selectedPage.access_token,
-          profile: {
-            name: igAccount.username || 'Instagram',
-            username: igAccount.username,
-            profilePicture: igAccount.profile_picture_url,
-          },
-          isActive: true,
-          lastUsedAt: new Date(),
-        },
-        { upsert: true, new: true }
-      );
-      console.log('[Facebook] Created Instagram integration for hashtag search:', igAccount.id);
-    }
-
-    delete req.session.facebookAccessToken;
-    delete req.session.facebookId;
-    delete req.session.facebookProfile;
-    delete req.session.facebookPages;
-    delete req.session.facebookTokenExpiresAt;
-    delete req.session.facebookUserId;
-
-    req.session.save(() => {
-      res.json({ ok: true });
-    });
+    renderOAuthCallback(res, integrationData);
   } catch (err) {
-    console.error('Facebook Page Selection Error:', err);
-    res.status(500).json({ error: 'Internal server error: ' + err.message });
+    const msg = err.response?.data?.error?.message || err.message;
+    renderOAuthCallback(res, null, msg);
   }
 });
 
-// Twitter Integration
+// Threads callback - NO auth (receives redirect from Threads with no session)
+// Uses JWT in state to identify user
+router.get('/threads/callback', async (req, res) => {
+  const { code, state, error, error_reason, error_description } = req.query;
+
+  if (error) {
+    return renderOAuthCallback(res, null, error_description || error_reason || error);
+  }
+
+  let savedUserId = null;
+  if (state) {
+    try {
+      const decoded = jwt.verify(state, config.jwt.secret);
+      savedUserId = decoded?.userId;
+    } catch (_) {}
+  }
+  if (!savedUserId) {
+    return renderOAuthCallback(res, null, 'Connection timed out. Please try connecting again from the dashboard.');
+  }
+
+  if (!code) {
+    return renderOAuthCallback(res, null, 'Missing authorization code');
+  }
+
+  try {
+    const cleanCode = code.replace(/#_$/, '');
+    const result = await exchangeCodeForToken(cleanCode);
+
+    if (result.error) {
+      return renderOAuthCallback(res, null, result.error);
+    }
+
+    const { access_token: shortToken, user_id: threadsUserId } = result;
+
+    // Exchange short-lived token (1h) for long-lived token (60 days)
+    const longLived = await exchangeThreadsLongLivedToken(shortToken);
+    const accessToken = longLived.access_token;
+    const tokenExpiresAt = new Date(Date.now() + (longLived.expires_in || 5184000) * 1000).toISOString();
+
+    const userInfo = await getThreadsUser(accessToken, threadsUserId);
+
+    if (userInfo.error) {
+      return renderOAuthCallback(res, null, userInfo.error);
+    }
+
+    const integrationData = {
+      userId: savedUserId,
+      platform: 'threads',
+      platformUserId: String(threadsUserId), // Store as string — Threads IDs exceed MAX_SAFE_INTEGER
+      platformUsername: userInfo.username,
+      accessToken,
+      tokenExpiresAt,
+      profile: {
+        name: userInfo.username || 'Threads User',
+        username: userInfo.username,
+      },
+      isActive: true,
+      lastUsedAt: new Date().toISOString(),
+    };
+
+    renderOAuthCallback(res, integrationData);
+  } catch (err) {
+    const msg = err.response?.data?.error_message || err.message;
+    renderOAuthCallback(res, null, msg);
+  }
+});
+
+// Twitter callback - NO auth (receives redirect from Twitter with no session)
+// Uses JWT in state to identify user and retrieve PKCE code verifier
+router.get('/twitter/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return renderOAuthCallback(res, null, error);
+  }
+
+  let savedUserId = null;
+  let codeVerifier = null;
+  if (state) {
+    try {
+      const decoded = jwt.verify(state, config.jwt.secret);
+      savedUserId = decoded?.userId;
+      codeVerifier = decoded?.codeVerifier;
+    } catch (_) {}
+  }
+
+  if (!savedUserId || !codeVerifier) {
+    return renderOAuthCallback(res, null, 'Connection timed out. Please try connecting again.');
+  }
+
+  if (!code) {
+    return renderOAuthCallback(res, null, 'Missing authorization code');
+  }
+
+  try {
+    const redirectUri = `${frontendUrl}/api/auth/integrations/twitter/callback`;
+    const tokenData = await exchangeOAuth2Code(code, codeVerifier, redirectUri);
+
+    if (tokenData.error) {
+      return renderOAuthCallback(res, null, tokenData.error);
+    }
+
+    const { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn } = tokenData;
+    const userInfo = await verifyTwitterCredentials(accessToken);
+
+    if (!userInfo) {
+      return renderOAuthCallback(res, null, 'Twitter verification failed');
+    }
+
+    const { id: twitterId, username, name, profilePicture } = userInfo;
+
+    const integrationData = {
+      userId: savedUserId,
+      platform: 'twitter',
+      platformUserId: twitterId,
+      platformUsername: username,
+      accessToken,
+      refreshToken,
+      tokenExpiresAt: new Date(Date.now() + (expiresIn || 7200) * 1000).toISOString(),
+      profile: {
+        name: name || username,
+        username,
+        profilePicture: profilePicture || `https://unavatar.io/twitter/${username}`,
+      },
+      isActive: true,
+      lastUsedAt: new Date().toISOString(),
+    };
+
+    renderOAuthCallback(res, integrationData);
+  } catch (err) {
+    renderOAuthCallback(res, null, err.response?.data?.error_description || err.message);
+  }
+});
+
+// All other integration routes require authentication
+router.use(requireAuth);
+
+// LinkedIn Integration - state = JWT with userId (no session needed)
+// Always uses the primary LinkedIn posting app (86swiutwriegdi) for OAuth.
+// Community Management app credentials are used separately for analytics/comments API calls.
+router.get('/linkedin', (req, res) => {
+  const state = jwt.sign(
+    { userId: req.user._id, n: uuidv4() },
+    config.jwt.secret,
+    { expiresIn: '10m' }
+  );
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: linkedin.clientId,
+    redirect_uri: `${frontendUrl}/api/auth/integrations/linkedin/callback`,
+    state,
+    scope: linkedin.scope,
+  });
+  const url = `https://www.linkedin.com/oauth/v2/authorization?${params}`;
+  if (wantsJson(req)) return res.json({ redirectUrl: url });
+  res.redirect(url);
+});
+
+// Facebook Integration - uses JWT in state (no session dependency)
+router.get('/facebook', (req, res) => {
+  const state = jwt.sign({ userId: req.user._id, n: uuidv4() }, config.jwt.secret, { expiresIn: '10m' });
+
+  const params = new URLSearchParams({
+    client_id: config.facebook.appId,
+    redirect_uri: `${frontendUrl}/api/auth/integrations/facebook/callback`,
+    state,
+    scope: 'public_profile,email,pages_show_list,pages_read_engagement,pages_manage_engagement,pages_manage_posts,pages_read_user_content,instagram_basic',
+    response_type: 'code',
+  });
+
+  const url = `https://www.facebook.com/v18.0/dialog/oauth?${params}`;
+  if (wantsJson(req)) return res.json({ redirectUrl: url });
+  res.redirect(url);
+});
+
+
+// Twitter Integration - state = JWT with userId + PKCE verifier (no session needed)
 router.get('/twitter', async (req, res) => {
   try {
-    const state = uuidv4();
     const { verifier, challenge } = generatePKCEChallenge();
-
-    req.session = req.session || {};
-    req.session.twitterOAuthState = state;
-    req.session.twitterCodeVerifier = verifier;
-    req.session.twitterUserId = req.user._id;
+    // Embed userId and codeVerifier in JWT state so callback is session-free
+    const state = jwt.sign(
+      { userId: req.user._id, codeVerifier: verifier, n: uuidv4() },
+      config.jwt.secret,
+      { expiresIn: '10m' }
+    );
 
     const params = new URLSearchParams({
       response_type: 'code',
@@ -363,8 +435,11 @@ router.get('/twitter', async (req, res) => {
       code_challenge_method: 'S256',
     });
 
-    res.redirect(`https://twitter.com/i/oauth2/authorize?${params}`);
+    const url = `https://twitter.com/i/oauth2/authorize?${params}`;
+    if (wantsJson(req)) return res.json({ redirectUrl: url });
+    res.redirect(url);
   } catch (err) {
+    if (wantsJson(req)) return res.status(500).json({ error: err.message });
     res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(err.message)}`);
   }
 });
@@ -375,13 +450,17 @@ router.get('/twitter/oauth1', async (req, res) => {
     const redirectUri = `${frontendUrl}/api/auth/integrations/twitter/oauth1/callback`;
     const result = await getOAuth1RequestToken(redirectUri);
     if (result.error) {
+      if (wantsJson(req)) return res.status(400).json({ error: result.error });
       return res.redirect(`${frontendUrl}/integrations?error=${encodeURIComponent(result.error)}`);
     }
     req.session = req.session || {};
     req.session.twitterOAuth1RequestSecret = result.oauth_token_secret;
     req.session.twitterOAuth1UserId = req.user._id?.toString?.() || req.user._id;
-    res.redirect(`https://api.twitter.com/oauth/authorize?oauth_token=${result.oauth_token}`);
+    const url = `https://api.twitter.com/oauth/authorize?oauth_token=${result.oauth_token}`;
+    if (wantsJson(req)) return res.json({ redirectUrl: url });
+    res.redirect(url);
   } catch (err) {
+    if (wantsJson(req)) return res.status(500).json({ error: err.message });
     res.redirect(`${frontendUrl}/integrations?error=${encodeURIComponent(err.message)}`);
   }
 });
@@ -420,84 +499,10 @@ router.get('/twitter/oauth1/callback', async (req, res) => {
   }
 });
 
-router.get('/twitter/callback', async (req, res) => {
-  const { code, state, error } = req.query;
 
-  if (error) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(error)}`);
-  }
-
-  const savedState = req.session?.twitterOAuthState;
-  const codeVerifier = req.session?.twitterCodeVerifier;
-  const savedUserId = req.session?.twitterUserId;
-
-  if (!savedState || savedState !== state || !savedUserId) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent('Connection timed out. Please try connecting again from the dashboard.')}`);
-  }
-
-  if (!code || !codeVerifier) {
-    return res.redirect(`${frontendUrl}/home?error=missing_params`);
-  }
-
-  try {
-    const redirectUri = `${frontendUrl}/api/auth/integrations/twitter/callback`;
-    const tokenData = await exchangeOAuth2Code(code, codeVerifier, redirectUri);
-
-    if (tokenData.error) {
-      return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(tokenData.error)}`);
-    }
-
-    const { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn } = tokenData;
-
-    const userInfo = await verifyTwitterCredentials(accessToken);
-
-    if (!userInfo) {
-      return res.redirect(`${frontendUrl}/home?error=twitter_verification_failed`);
-    }
-
-    const { id: twitterId, username, name, profilePicture } = userInfo;
-
-    const integrationData = {
-      userId: savedUserId,
-      platform: 'twitter',
-      platformUserId: twitterId,
-      platformUsername: username,
-      accessToken,
-      refreshToken,
-      tokenExpiresAt: new Date(Date.now() + expiresIn * 1000),
-      profile: {
-        name: name || username,
-        username: username,
-        profilePicture: profilePicture || `https://unavatar.io/twitter/${username}`,
-      },
-      isActive: true,
-      lastUsedAt: new Date(),
-    };
-
-    await integrationRepo.findOneAndUpdate(
-      { userId: savedUserId, platform: 'twitter' },
-      integrationData,
-      { upsert: true, new: true }
-    );
-
-    delete req.session.twitterOAuthState;
-    delete req.session.twitterCodeVerifier;
-    delete req.session.twitterUserId;
-
-    req.session.save(() => {
-      res.redirect(`${frontendUrl}/home?integration=twitter&status=connected`);
-    });
-  } catch (err) {
-    res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(err.message)}`);
-  }
-});
-
-// Threads Integration
+// Threads Integration - uses JWT in state (popup-safe, no session dependency)
 router.get('/threads', (req, res) => {
-  const state = uuidv4();
-  req.session = req.session || {};
-  req.session.threadsOAuthState = state;
-  req.session.threadsUserId = req.user._id;
+  const state = jwt.sign({ userId: req.user._id, n: uuidv4() }, config.jwt.secret, { expiresIn: '10m' });
 
   const params = new URLSearchParams({
     client_id: config.threads.appId,
@@ -507,74 +512,9 @@ router.get('/threads', (req, res) => {
     state,
   });
 
-  res.redirect(`https://threads.net/oauth/authorize?${params}`);
-});
-
-router.get('/threads/callback', async (req, res) => {
-  const { code, state, error, error_reason, error_description } = req.query;
-
-  if (error) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(error_description || error_reason || error)}`);
-  }
-
-  const savedState = req.session?.threadsOAuthState;
-  const savedUserId = req.session?.threadsUserId;
-  if (!savedState || savedState !== state || !savedUserId) {
-    return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent('Connection timed out. Please try connecting again from the dashboard.')}`);
-  }
-
-  if (!code) {
-    return res.redirect(`${frontendUrl}/home?error=missing_code`);
-  }
-
-  try {
-    // Strip #_ from code if present
-    const cleanCode = code.replace(/#_$/, '');
-
-    const result = await exchangeCodeForToken(cleanCode);
-
-    if (result.error) {
-      return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(result.error)}`);
-    }
-
-    const { access_token: accessToken, user_id: threadsUserId } = result;
-
-    const userInfo = await getThreadsUser(accessToken, threadsUserId);
-
-    if (userInfo.error) {
-      return res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(userInfo.error)}`);
-    }
-
-    const integrationData = {
-      userId: savedUserId,
-      platform: 'threads',
-      platformUserId: threadsUserId,
-      platformUsername: userInfo.username,
-      accessToken,
-      profile: {
-        name: userInfo.username || 'Threads User',
-        username: userInfo.username,
-      },
-      isActive: true,
-      lastUsedAt: new Date(),
-    };
-
-    await integrationRepo.findOneAndUpdate(
-      { userId: savedUserId, platform: 'threads' },
-      integrationData,
-      { upsert: true, new: true }
-    );
-
-    delete req.session.threadsOAuthState;
-    delete req.session.threadsUserId;
-
-    req.session.save(() => {
-      res.redirect(`${frontendUrl}/home?integration=threads&status=connected`);
-    });
-  } catch (err) {
-    const msg = err.response?.data?.error_message || err.message;
-    res.redirect(`${frontendUrl}/home?error=${encodeURIComponent(msg)}`);
-  }
+  const url = `https://threads.net/oauth/authorize?${params}`;
+  if (wantsJson(req)) return res.json({ redirectUrl: url });
+  res.redirect(url);
 });
 
 // Instagram Direct Login - userId encoded in state JWT (no cookie/session needed across redirect)
@@ -590,8 +530,9 @@ router.get('/instagram', (req, res) => {
     state,
   });
 
-  console.log('Instagram OAuth start ->', config.instagram.redirectUri);
-  res.redirect(`https://api.instagram.com/oauth/authorize?${params}`);
+  const url = `https://api.instagram.com/oauth/authorize?${params}`;
+  if (wantsJson(req)) return res.json({ redirectUrl: url });
+  res.redirect(url);
 });
 
 export default router;

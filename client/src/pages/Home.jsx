@@ -1,6 +1,8 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
-import { api } from '../hooks/useAuth';
+import { api, useAuth } from '../hooks/useAuth';
+import { auth } from '../firebase';
+import { getIntegrations, getPosts, setIntegration } from '../services/firestore';
 import PostList from '../components/PostList';
 import LoadingScreen from '../components/LoadingScreen';
 import './Home.css';
@@ -10,6 +12,7 @@ const PostComposer = lazy(() => import('../components/PostComposer'));
 const PLATFORMS = ['linkedin', 'facebook', 'twitter', 'instagram', 'threads'];
 
 export default function Home() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -36,25 +39,34 @@ export default function Home() {
   }, [ideaState.ideaPrompt, platformFromState]);
 
   const loadPosts = (isLoadMore = false) => {
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return setLoading(false);
     if (isLoadMore) setLoadingMore(true);
     else setLoading(true);
     const lastPostId = isLoadMore && posts.length > 0 ? posts[posts.length - 1].id : null;
-    let query = lastPostId ? `?startAfter=${lastPostId}&limit=10` : '?limit=10';
-    if (selectedPlatform) query += `&platform=${selectedPlatform}`;
-    api('/posts' + query)
-      .then((r) => r.json())
-      .then((data) => {
-        if (isLoadMore) setPosts((prev) => [...prev, ...(data.posts || [])]);
-        else setPosts(data.posts || []);
-        setTotalPosts(data.total || 0);
-        setHasMore(data.hasMore || false);
+    getPosts(uid, {
+      limit: 10,
+      startAfterId: lastPostId || undefined,
+      platform: selectedPlatform || undefined,
+    })
+      .then((items) => {
+        if (isLoadMore) {
+          setPosts((prev) => [...prev, ...items]);
+          setTotalPosts((prev) => prev + items.length);
+        } else {
+          setPosts(items);
+          setTotalPosts(items.length);
+        }
+        setHasMore(items.length >= 10);
       })
       .catch(() => { if (!isLoadMore) setPosts([]); })
       .finally(() => { setLoading(false); setLoadingMore(false); });
   };
 
   const loadIntegrations = () => {
-    api('/integrations').then((r) => r.json()).then(setIntegrations).catch(() => setIntegrations([]));
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return setIntegrations([]);
+    getIntegrations(uid).then(setIntegrations).catch(() => setIntegrations([]));
   };
 
   useEffect(() => {
@@ -64,21 +76,29 @@ export default function Home() {
       alert(decodeURIComponent(error));
       window.history.replaceState({}, '', window.location.pathname);
     }
+  }, []);
+
+  useEffect(() => {
     loadIntegrations();
+  }, [user?.id]);
+
+  useEffect(() => {
+    const onChanged = () => loadIntegrations();
+    window.addEventListener('integrations-changed', onChanged);
+    return () => window.removeEventListener('integrations-changed', onChanged);
   }, []);
 
   useEffect(() => { loadPosts(false); }, [selectedPlatform]);
 
-  const handleDisconnectIntegration = async (integrationId) => {
+  const handleDisconnectIntegration = async (integration) => {
     if (!confirm('Are you sure you want to disconnect?')) return;
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
     try {
-      const res = await api(`/integrations/${integrationId}`, { method: 'DELETE' });
-      if (res.ok) {
-        loadIntegrations();
-        window.dispatchEvent(new CustomEvent('integrations-changed'));
-        const p = integrations.find((i) => i.id === integrationId)?.platform;
-        if (p === selectedPlatform) setSelectedPlatform(null);
-      }
+      await setIntegration(uid, integration.platform, { isActive: false });
+      loadIntegrations();
+      window.dispatchEvent(new CustomEvent('integrations-changed'));
+      if (integration.platform === selectedPlatform) setSelectedPlatform(null);
     } catch (err) {
       alert('Failed to disconnect');
     }
@@ -92,14 +112,17 @@ export default function Home() {
   const [stats, setStats] = useState({ scheduled: 0, published: 0 });
 
   useEffect(() => {
-    api('/posts?limit=500').then((r) => r.json()).then((data) => {
-      const posts = data.posts || [];
-      setStats({
-        scheduled: posts.filter((p) => p.status === 'scheduled').length,
-        published: posts.filter((p) => p.status === 'published').length,
-      });
-    }).catch(() => {});
-  }, [selectedPlatform, totalPosts]);
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
+    getPosts(uid, { limit: 500 })
+      .then((posts) => {
+        setStats({
+          scheduled: posts.filter((p) => p.status === 'scheduled').length,
+          published: posts.filter((p) => p.status === 'published').length,
+        });
+      })
+      .catch(() => {});
+  }, [user?.id, selectedPlatform, totalPosts]);
 
   const quickActions = [
     { label: 'Create Post', desc: 'Write and share content', path: '/integrations', icon: 'edit' },
@@ -175,7 +198,7 @@ export default function Home() {
               <p>@{selectedPlatform} connected</p>
             </div>
           </div>
-          <button className="home-hero__disconnect" onClick={() => handleDisconnectIntegration(integration.id)}>
+          <button className="home-hero__disconnect" onClick={() => handleDisconnectIntegration(integration)}>
             Disconnect
           </button>
         </header>

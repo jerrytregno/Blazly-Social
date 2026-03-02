@@ -1,4 +1,5 @@
-import { api } from '../hooks/useAuth';
+import { auth } from '../firebase';
+import { deletePost } from '../services/firestore';
 import './PostList.css';
 
 function formatDate(d) {
@@ -49,11 +50,14 @@ const PLATFORM_ICONS = {
 };
 
 export default function PostList({ posts, onUpdate }) {
-  const handleDelete = (id) => {
+  const handleDelete = async (id) => {
     if (!window.confirm('Delete this post?')) return;
-    api(`/posts/${id}`, { method: 'DELETE' })
-      .then((r) => r.ok && onUpdate?.())
-      .catch(() => { });
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    try {
+      const ok = await deletePost(uid, id);
+      if (ok) onUpdate?.();
+    } catch (_) {}
   };
 
   if (!posts?.length) {

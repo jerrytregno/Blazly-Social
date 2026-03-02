@@ -8,7 +8,10 @@ import {
   replyToInstagramComment,
   replyToFacebookComment,
   replyToLinkedInComment,
+  replyToTwitterTweet,
+  replyToThreadsPost,
 } from '../services/inbox.service.js';
+import { isCredentialError } from '../utils/credentialError.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -19,6 +22,26 @@ router.get('/', async (req, res) => {
     const items = await fetchUnifiedInbox(req.user._id);
     res.json({ items });
   } catch (err) {
+    if (isCredentialError(err)) return res.json({ items: [], clientMode: true });
+    console.error('Inbox fetch error:', err);
+    res.status(500).json({ error: 'Failed to load inbox' });
+  }
+});
+
+/** POST /api/inbox/fetch - Fetch inbox with client-supplied integrations (for client-mode / no server Firestore) */
+router.post('/fetch', async (req, res) => {
+  try {
+    const { integrations: clientIntegrations } = req.body || {};
+    let items = [];
+    if (clientIntegrations?.length) {
+      // Use client-supplied integrations directly (avoids server Firestore)
+      items = await fetchUnifiedInbox(req.user._id, clientIntegrations);
+    } else {
+      items = await fetchUnifiedInbox(req.user._id);
+    }
+    res.json({ items });
+  } catch (err) {
+    if (isCredentialError(err)) return res.json({ items: [], clientMode: true });
     console.error('Inbox fetch error:', err);
     res.status(500).json({ error: 'Failed to load inbox' });
   }
@@ -44,17 +67,28 @@ router.post('/reply', async (req, res) => {
     const { commentId, platform, replyText } = req.body || {};
     if (!commentId || !replyText) return res.status(400).json({ error: 'commentId and replyText required' });
 
-    const integrations = await integrationRepo.find({ userId: req.user._id, isActive: true });
+    // Accept integrations from client body OR load from server Firestore
+    let integrations = req.body?.integrations || [];
+    if (!integrations.length) {
+      try {
+        integrations = await integrationRepo.find({ userId: req.user._id, isActive: true });
+      } catch (dbErr) {
+        if (isCredentialError(dbErr)) integrations = [];
+        else throw dbErr;
+      }
+    }
     let token = null;
 
+    const int = integrations.find((i) => i.platform === platform);
     if (platform === 'instagram') {
-      const int = integrations.find((i) => i.platform === 'instagram');
-      token = int?.instagramPageAccessToken;
+      token = int?.instagramPageAccessToken || int?.accessToken;
     } else if (platform === 'facebook') {
-      const int = integrations.find((i) => i.platform === 'facebook');
-      token = int?.facebookPageAccessToken;
+      token = int?.facebookPageAccessToken || int?.accessToken;
     } else if (platform === 'linkedin') {
-      const int = integrations.find((i) => i.platform === 'linkedin');
+      token = int?.accessToken;
+    } else if (platform === 'twitter') {
+      token = int?.accessToken;
+    } else if (platform === 'threads') {
       token = int?.accessToken;
     }
 
@@ -70,6 +104,10 @@ router.post('/reply', async (req, res) => {
       const shareUrn = postUrn || req.body?.postId;
       if (!shareUrn) return res.status(400).json({ error: 'postUrn required for LinkedIn reply' });
       result = await replyToLinkedInComment(shareUrn, commentId, replyText, token, parentCommentUrn);
+    } else if (platform === 'twitter') {
+      result = await replyToTwitterTweet(commentId, replyText, token);
+    } else if (platform === 'threads') {
+      result = await replyToThreadsPost(commentId, replyText, token);
     } else {
       return res.status(400).json({ error: 'Platform not supported for replies' });
     }
@@ -88,6 +126,7 @@ router.get('/settings', async (req, res) => {
     const user = await userRepo.findById(req.user._id);
     res.json({ autoReplyEnabled: user?.settings?.inboxAutoReply === true });
   } catch (err) {
+    if (isCredentialError(err)) return res.json({ autoReplyEnabled: false });
     res.status(500).json({ error: 'Failed to load settings' });
   }
 });
@@ -101,6 +140,7 @@ router.patch('/settings', async (req, res) => {
     await userRepo.findByIdAndUpdate(req.user._id, { settings });
     res.json({ ok: true, autoReplyEnabled: !!autoReplyEnabled });
   } catch (err) {
+    if (isCredentialError(err)) return res.json({ ok: true, autoReplyEnabled: !!req.body?.autoReplyEnabled });
     res.status(500).json({ error: 'Failed to update settings' });
   }
 });

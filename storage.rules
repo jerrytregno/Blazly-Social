@@ -1,14 +1,20 @@
 rules_version = '2';
 
-// Firebase Storage rules
+// Firebase Storage – client uploads (no Admin SDK needed for images)
 service firebase.storage {
   match /b/{bucket}/o {
-    // Uploaded images (post images, AI-generated) - public read for LinkedIn/Instagram to fetch
+    // User uploads: path uploads/{userId}/{filename}
+    // Public read for LinkedIn/Instagram/Facebook; only owner can write
+    match /uploads/{userId}/{allFiles=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    // Legacy flat path (if any)
     match /uploads/{fileName} {
       allow read: if true;
-      allow write: if false; // Backend (Admin SDK) only
+      allow write: if false;
     }
-    // LinkedIn posts backup
+    // LinkedIn posts backup (optional – backend uses Admin SDK if available)
     match /linkedin-posts/{userId}/{fileName} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }

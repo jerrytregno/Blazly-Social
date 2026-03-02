@@ -58,10 +58,11 @@ export async function findOneAndUpdate(query, update, opts = {}) {
     }
   }
 
-  if (upsert && query.competitorName && query.competitorUrl) {
+  const resolvedName = query.competitorName || data.competitorName;
+  if (upsert && resolvedName && query.competitorUrl) {
     const newRef = await db.collection(COL).add({
       userId,
-      competitorName: query.competitorName,
+      competitorName: resolvedName,
       competitorUrl: query.competitorUrl,
       ...data,
       createdAt: new Date(),

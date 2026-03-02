@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { auth } from '../firebase';
 import { useAuth, api } from '../hooks/useAuth';
+import { getPosts, getIntegrations, updatePost, deletePost, createPost } from '../services/firestore';
+import { useScheduler } from '../hooks/useScheduler';
 import LoadingScreen from '../components/LoadingScreen';
 import './Planner.css';
 
@@ -40,35 +43,41 @@ export default function Planner() {
   const [meData, setMeData] = useState(null);
   const [plannerTimezone, setPlannerTimezone] = useState('');
 
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const [res, intRes, timesRes] = await Promise.all([
-        api('/posts?limit=200'),
-        api('/integrations'),
-        api('/scheduling/suggested-times'),
-      ]);
-      const data = await res.json();
-      const list = data.posts || [];
-      setPosts(list);
-      const byDate = {};
-      list.filter((p) => p.scheduledAt || p.publishedAt).forEach((p) => {
-        const d = new Date(p.scheduledAt || p.publishedAt);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        if (!byDate[key]) byDate[key] = [];
-        byDate[key].push(p);
-      });
-      setScheduled(byDate);
-      if (intRes.ok) setIntegrations(await intRes.json());
-      if (timesRes.ok) setSuggestedTimes(await timesRes.json());
-    } catch (_) {
-      setPosts([]);
-      setScheduled({});
-    }
-    setLoading(false);
-  };
+  // Client-side scheduler: runs due scheduled posts every 60s while tab is open
+  useScheduler(integrations);
 
-  useEffect(() => { loadData(); }, []);
+  const loadData = useCallback(async () => {
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return setLoading(false);
+    setLoading(true);
+
+    const [postsResult, intResult, timesResult] = await Promise.allSettled([
+      getPosts(uid, { limit: 200 }),
+      getIntegrations(uid),
+      api('/scheduling/suggested-times').then((r) => r.ok ? r.json() : {}),
+    ]);
+
+    const list = postsResult.status === 'fulfilled' ? (postsResult.value || []) : [];
+    const intData = intResult.status === 'fulfilled' ? (intResult.value || []) : [];
+    const timesRes = timesResult.status === 'fulfilled' ? timesResult.value : {};
+
+    setPosts(list);
+    setIntegrations(intData);
+    if (timesRes && typeof timesRes === 'object' && Object.keys(timesRes).length) setSuggestedTimes(timesRes);
+
+    const byDate = {};
+    list.filter((p) => p.scheduledAt || p.publishedAt).forEach((p) => {
+      const d = new Date(p.scheduledAt || p.publishedAt);
+      if (isNaN(d.getTime())) return;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (!byDate[key]) byDate[key] = [];
+      byDate[key].push(p);
+    });
+    setScheduled(byDate);
+    setLoading(false);
+  }, [user?.id]);
+
+  useEffect(() => { loadData(); }, [loadData]);
 
   useEffect(() => {
     const state = location.state;
@@ -135,9 +144,11 @@ export default function Planner() {
 
   const handleDeletePost = async (postId) => {
     if (!window.confirm('Delete this scheduled post?')) return;
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
     try {
-      const res = await api(`/posts/${postId}`, { method: 'DELETE' });
-      if (res.ok) {
+      const ok = await deletePost(uid, postId);
+      if (ok) {
         loadData();
         setViewPostsModal((m) => {
           const remaining = m.posts.filter((p) => p.id !== postId);
@@ -153,12 +164,11 @@ export default function Planner() {
     const post = posts.find((p) => p.id === postId);
     const oldKey = post?.scheduledAt ? `${new Date(post.scheduledAt).getFullYear()}-${String(new Date(post.scheduledAt).getMonth() + 1).padStart(2, '0')}-${String(new Date(post.scheduledAt).getDate()).padStart(2, '0')}` : null;
     const scheduledTime = `${newDateStr}T${newTimeStr}:00`;
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
     try {
-      const res = await api(`/posts/${postId}/reschedule`, {
-        method: 'PATCH',
-        body: JSON.stringify({ scheduledTime }),
-      });
-      if (res.ok) {
+      const updated = await updatePost(uid, postId, { scheduledAt: new Date(scheduledTime) });
+      if (updated) {
         setReschedulePost(null);
         if (post) {
           const movedPost = { ...post, scheduledAt: new Date(scheduledTime).toISOString() };
@@ -303,10 +313,12 @@ export default function Planner() {
     }
     setScheduleSubmitting(true);
     try {
+      const scheduledAt = new Date(scheduleModal.dateTime).toISOString();
       const body = {
         content: scheduleContent.trim(),
-        scheduleAt: new Date(scheduleModal.dateTime).toISOString(),
+        scheduleAt: scheduledAt,
         platforms: schedulePlatforms,
+        integrations, // pass integrations so server runs in clientMode
       };
       if (scheduleImageUrl) {
         body.imageUrl = scheduleImageUrl;
@@ -319,6 +331,20 @@ export default function Planner() {
       });
       const data = await res.json();
       if (res.ok) {
+        // Save scheduled post to client Firestore so Planner calendar shows it
+        const uid = auth.currentUser?.uid;
+        if (uid) {
+          await createPost(uid, {
+            content: scheduleContent.trim(),
+            platforms: schedulePlatforms,
+            status: 'scheduled',
+            scheduledAt: new Date(scheduledAt),
+            imageUrl: scheduleImageUrl || null,
+            mediaType: scheduleImageUrl ? 'image' : 'text',
+            platformIds: {},
+            platformUrls: {},
+          }).catch(() => {});
+        }
         loadData();
         setScheduleModal(null);
         setScheduleContent('');

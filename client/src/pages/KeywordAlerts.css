@@ -344,3 +344,22 @@
 .keyword-alerts-match-link:hover {
   text-decoration: underline;
 }
+
+.keyword-alerts-platform-notice {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.keyword-alerts-notice--warn {
+  background: color-mix(in srgb, #f59e0b 12%, var(--bg));
+  border: 1px solid #f59e0b;
+}
+
+.keyword-alerts-notice--info {
+  background: color-mix(in srgb, #3b82f6 10%, var(--bg));
+  border: 1px solid #3b82f6;
+}

@@ -96,6 +96,8 @@ export async function registerImage(accessToken, authorUrn) {
   }
 }
 
+const UPLOAD_TIMEOUT_MS = 60000; // 60s – LinkedIn upload can be slow for large images
+
 /**
  * Upload image binary to LinkedIn
  * @param {string} uploadUrl 
@@ -103,7 +105,7 @@ export async function registerImage(accessToken, authorUrn) {
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
 export async function uploadImage(uploadUrl, imageUrl) {
-  try {
+  const doPut = async () => {
     let buffer;
     let contentType = 'image/png';
 
@@ -127,24 +129,43 @@ export async function uploadImage(uploadUrl, imageUrl) {
       if (imageUrl && imageUrl.includes('ngrok')) {
         headers['ngrok-skip-browser-warning'] = '1';
       }
-      const imageRes = await axios.get(imageUrl, { responseType: 'arraybuffer', headers });
+      const imageRes = await axios.get(imageUrl, {
+        responseType: 'arraybuffer',
+        headers,
+        timeout: UPLOAD_TIMEOUT_MS,
+      });
       buffer = Buffer.from(imageRes.data, 'binary');
       contentType = imageRes.headers['content-type'] || 'image/png';
     }
 
-    // 2. Upload to LinkedIn
+    // Upload to LinkedIn – use longer timeout to avoid EPIPE (connection closed before write completes)
     await axios.put(uploadUrl, buffer, {
-      headers: {
-        'Content-Type': contentType,
-      },
+      headers: { 'Content-Type': contentType },
+      timeout: UPLOAD_TIMEOUT_MS,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
     });
+  };
 
-    return { success: true };
-  } catch (err) {
-    const msg = err.response?.data?.message || err.message;
-    console.error('LinkedIn Image Binary Upload Error:', msg);
-    return { success: false, error: msg };
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await doPut();
+      return { success: true };
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message || err.code || err.toString();
+      console.error(`LinkedIn Image Binary Upload Error (attempt ${attempt}/2):`, msg, err.code ? `(${err.code})` : '');
+      const isRetryable = err.code === 'EPIPE' || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT';
+      if (attempt < 2 && isRetryable) {
+        await new Promise((r) => setTimeout(r, 1500)); // brief delay before retry
+        continue;
+      }
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
+        return { success: false, error: 'Upload connection was interrupted. Try again or use a smaller image.' };
+      }
+      return { success: false, error: msg };
+    }
   }
+  return { success: false, error: 'Upload failed' };
 }
 
 /**

@@ -2,7 +2,7 @@
  * Express app – used by both dev server (server/index.js) and Vercel (src/server.js).
  * Does NOT call listen(), connectDb(), or startScheduler().
  */
-import './firebase.js';
+import './firebase.js'; // Initialize Firestore (no firebase-admin)
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -32,17 +32,16 @@ const app = express();
 
 app.set('trust proxy', 1);
 
-// Ensure DB is connected (for Vercel serverless cold starts)
+// DB connect - optional when no service account (client-side Firestore mode)
 let _dbReady = false;
 app.use(async (req, res, next) => {
   if (!_dbReady) {
     try {
       await connectDb();
-      _dbReady = true;
     } catch (e) {
-      console.error('DB connect error:', e);
-      return res.status(500).json({ error: 'Database unavailable' });
+      console.warn('Firestore not available (no credentials). Using client-side Firestore mode.');
     }
+    _dbReady = true;
   }
   next();
 });

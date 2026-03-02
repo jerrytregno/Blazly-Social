@@ -6,6 +6,7 @@ import * as ideaCacheRepo from '../db/ideaCacheRepository.js';
 import * as userRepo from '../db/userRepository.js';
 import { generateContentIdeas } from '../services/gemini.js';
 import { fetchPlatformTrends } from '../services/platformTrends.service.js';
+import { isCredentialError } from '../utils/credentialError.js';
 
 const router = Router();
 
@@ -63,6 +64,7 @@ router.get('/ideas', requireAuth, async (req, res) => {
     }
     res.json({ ideas: [], cached: false });
   } catch (err) {
+    if (isCredentialError(err)) return res.json({ ideas: [], cached: false });
     console.error('Trends ideas cache error:', err);
     res.status(500).json({ error: 'Failed to fetch ideas' });
   }
@@ -71,8 +73,16 @@ router.get('/ideas', requireAuth, async (req, res) => {
 /** POST /trends/ideas/generate - Generate ideas with custom instruction, cache result */
 router.post('/ideas/generate', requireAuth, async (req, res) => {
   try {
-    const profile = await userProfileRepo.findOne({ userId: req.user._id });
-    const user = await userRepo.findById(req.user._id);
+    // Load profile + user; gracefully skip if credentials unavailable
+    let profile = null;
+    let user = null;
+    const [profileResult, userResult] = await Promise.allSettled([
+      userProfileRepo.findOne({ userId: req.user._id }),
+      userRepo.findById(req.user._id),
+    ]);
+    if (profileResult.status === 'fulfilled') profile = profileResult.value;
+    if (userResult.status === 'fulfilled') user = userResult.value;
+
     const keywords = profile?.keywords?.length ? profile.keywords : ['social media', 'content', 'marketing'];
     const businessContext = [profile?.businessSummary, profile?.businessName].filter(Boolean).join('. ');
     const customInstruction =
@@ -87,23 +97,22 @@ router.post('/ideas/generate', requireAuth, async (req, res) => {
     const result = await generateContentIdeas(keywords, trendData, businessContext, customInstruction);
     const ideas = result.ideas || [];
 
-    await ideaCacheRepo.findOneAndUpdate(
-      { userId: req.user._id },
-      {
-        userId: req.user._id,
-        ideas,
-        customInstruction,
-        keywords,
-        category,
-        generatedAt: new Date(),
-      },
-      { upsert: true, new: true }
-    );
+    // Cache result; skip silently if DB unavailable
+    try {
+      await ideaCacheRepo.findOneAndUpdate(
+        { userId: req.user._id },
+        { userId: req.user._id, ideas, customInstruction, keywords, category, generatedAt: new Date() },
+        { upsert: true, new: true }
+      );
+    } catch (cacheErr) {
+      if (!isCredentialError(cacheErr)) console.warn('Idea cache write failed:', cacheErr.message);
+    }
 
     res.json({ ideas, keywords, category });
   } catch (err) {
+    if (isCredentialError(err)) return res.json({ ideas: [], cached: false });
     console.error('Trends ideas generate error:', err);
-    res.status(500).json({ error: 'Failed to generate ideas' });
+    res.status(500).json({ error: 'Failed to generate ideas: ' + err.message });
   }
 });
 
@@ -147,6 +156,7 @@ router.get('/insights', requireAuth, async (req, res) => {
       createdAt: i.createdAt,
     })));
   } catch (err) {
+    if (isCredentialError(err)) return res.json([]);
     res.status(500).json({ error: 'Failed to fetch insights' });
   }
 });

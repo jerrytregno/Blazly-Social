@@ -1,32 +1,30 @@
 import { useState, useEffect } from 'react';
 import { auth } from '../firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { getUser } from '../services/firestore';
 
 const API = '/api';
 
 /** Normalize user to a common shape for the app */
-function normalizeUser(source) {
+function normalizeUser(source, firestoreUser = null) {
   if (!source) return null;
+  const fs = firestoreUser || {};
   const base = {
     id: source.id || source.uid || source._id,
-    email: source.email,
-    name: source.name,
-    timezone: source.timezone ?? 'UTC',
-    profileCompletion: source.profileCompletion ?? 0,
-    onboardingStep: source.onboardingStep ?? 1,
+    email: source.email || fs.email,
+    name: source.name || fs.name,
+    timezone: source.timezone ?? fs.timezone ?? 'UTC',
+    profileCompletion: source.profileCompletion ?? fs.profileCompletion ?? 0,
+    onboardingStep: source.onboardingStep ?? fs.onboardingStep ?? 1,
     profile: {
-      name: source.name || [source.profile?.firstName, source.profile?.lastName].filter(Boolean).join(' ') || source.displayName || '',
-      firstName: source.profile?.firstName || (source.name || source.displayName || '').split(' ')[0] || '',
-      lastName: source.profile?.lastName || (source.name || source.displayName || '').split(' ').slice(1).join(' ') || '',
-      profilePicture: source.profile?.profilePicture || source.photoURL || source.picture,
+      name: source.name || [source.profile?.firstName, source.profile?.lastName].filter(Boolean).join(' ') || source.displayName || fs.profile?.name || '',
+      firstName: source.profile?.firstName || fs.profile?.firstName || (source.name || source.displayName || '').split(' ')[0] || '',
+      lastName: source.profile?.lastName || fs.profile?.lastName || (source.name || source.displayName || '').split(' ').slice(1).join(' ') || '',
+      profilePicture: source.profile?.profilePicture || source.photoURL || source.picture || fs.profile?.profilePicture,
     },
   };
-  if (source.profile) {
-    const fullName = source.name || [source.profile?.firstName, source.profile?.lastName].filter(Boolean).join(' ') || base.profile.name;
-    base.profile.name = fullName;
-    base.profile.firstName = source.profile.firstName ?? fullName.split(' ')[0];
-    base.profile.lastName = source.profile.lastName ?? fullName.split(' ').slice(1).join(' ');
-    base.profile.profilePicture = source.profile.profilePicture || base.profile.profilePicture;
+  if (fs.profile) {
+    base.profile = { ...base.profile, ...fs.profile };
   }
   return base;
 }
@@ -34,38 +32,25 @@ function normalizeUser(source) {
 export function useAuth() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [authMode, setAuthMode] = useState(null); // 'firebase' | 'session'
 
   useEffect(() => {
     let cancelled = false;
 
-    const checkSession = async () => {
-      try {
-        const res = await fetch(`${API}/me`, { credentials: 'include' });
-        if (cancelled) return;
-        if (res.ok) {
-          const data = await res.json();
-          setUser(normalizeUser(data));
-          setAuthMode('session');
-          return true;
-        }
-      } catch (_) {}
-      return false;
-    };
-
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (cancelled) return;
       if (firebaseUser) {
+        let firestoreUser = null;
+        try {
+          firestoreUser = await getUser(firebaseUser.uid);
+        } catch (_) {}
         setUser(normalizeUser({
           uid: firebaseUser.uid,
           email: firebaseUser.email,
           displayName: firebaseUser.displayName,
           photoURL: firebaseUser.photoURL,
-        }));
-        setAuthMode('firebase');
+        }, firestoreUser));
       } else {
-        const hasSession = await checkSession();
-        if (!hasSession) setUser(null);
+        setUser(null);
       }
       setLoading(false);
     });
@@ -78,7 +63,6 @@ export function useAuth() {
 
   const logout = async () => {
     setUser(null);
-    setAuthMode(null);
     try {
       await signOut(auth);
     } catch (_) {}
@@ -92,12 +76,10 @@ export function useAuth() {
   return { user, loading, logout };
 }
 
+/** API helper - uses Firebase ID token */
 export async function api(path, options = {}) {
   let token = null;
-  const jwtToken = typeof localStorage !== 'undefined' ? localStorage.getItem('blazly_token') : null;
-  if (jwtToken) {
-    token = jwtToken;
-  } else if (auth.currentUser) {
+  if (auth.currentUser) {
     token = await auth.currentUser.getIdToken().catch(() => null);
   }
 
@@ -113,38 +95,10 @@ export async function api(path, options = {}) {
     credentials: 'include',
   });
 
-  // On 401: try to refresh JWT from Firebase (for Google users who had no token stored)
-  if (res.status === 401 && !options._skipAuthRedirect && !path.startsWith('/auth/') && auth.currentUser) {
-    try {
-      const freshToken = await auth.currentUser.getIdToken();
-      const sessionRes = await fetch(`${API}/auth/session`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${freshToken}` },
-        credentials: 'include',
-      });
-      const data = await sessionRes.json().catch(() => ({}));
-      if (sessionRes.ok && data.token) {
-        localStorage.setItem('blazly_token', data.token);
-        headers['Authorization'] = `Bearer ${data.token}`;
-        res = await fetch(`${API}${path}`, { ...options, headers, credentials: 'include' });
-      }
-    } catch (_) {}
-  }
-
-  if (res.status === 401 && !options._skipAuthRedirect && !path.startsWith('/me')) {
+  if (res.status === 401 && !options._skipAuthRedirect && !path.startsWith('/auth/')) {
     if (typeof window !== 'undefined' && window.location.pathname !== '/' && !window.location.pathname.startsWith('/onboarding')) {
       const next = encodeURIComponent(window.location.pathname + window.location.search);
       window.location.href = next ? `/?next=${next}` : '/';
-    }
-  }
-
-  // 403 from auth = account not found (e.g. Google sign-in for non-existent user)
-  if (res.status === 403 && auth.currentUser) {
-    const data = await res.clone().json().catch(() => ({}));
-    if (data.error?.includes('sign up with email')) {
-      await signOut(auth);
-      localStorage.removeItem('blazly_token');
-      if (typeof window !== 'undefined') window.location.href = '/?error=' + encodeURIComponent(data.error);
     }
   }
 

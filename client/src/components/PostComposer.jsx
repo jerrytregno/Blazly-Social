@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../hooks/useAuth';
+import { auth } from '../firebase';
+import { createPost } from '../services/firestore';
+import { uploadFileToStorage, uploadBase64ToStorage } from '../utils/uploadToStorage';
 import LoadingScreen from './LoadingScreen';
 import './PostComposer.css';
 
@@ -192,16 +195,15 @@ export default function PostComposer({
 
     try {
       for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        const res = await api('/upload', {
-          method: 'POST',
-          body: formData,
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed');
+        let url;
+        // Client upload to Firebase Storage (no backend/service account)
+        if (!auth.currentUser) {
+          throw new Error('Sign in with Google to upload images.');
+        }
+        const result = await uploadFileToStorage(file, 'post');
+        if (result.error) throw new Error(result.error);
+        url = result.url;
 
-        const url = data.url;
         const isVideo = file.type.startsWith('video/');
         newMediaItems.push({
           type: isVideo ? 'VIDEO' : 'IMAGE',
@@ -220,7 +222,7 @@ export default function PostComposer({
       setIsExpanded(true);
     } catch (err) {
       console.error('File upload error:', err);
-      setError('Failed to upload. Ensure backend is running and try again.');
+      setError(err.message || 'Upload failed. Sign in with Google for direct upload.');
     } finally {
       setLoading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -306,7 +308,18 @@ export default function PostComposer({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Image generation failed');
-      const generatedImageUrl = data.url;
+
+      let generatedImageUrl;
+      if (data.base64) {
+        const result = await uploadBase64ToStorage(data.base64);
+        if (result.error) throw new Error(result.error);
+        generatedImageUrl = result.url;
+      } else if (data.url) {
+        generatedImageUrl = data.url;
+      } else {
+        throw new Error('No image returned');
+      }
+
       const newItem = {
         type: 'IMAGE',
         imageUrl: generatedImageUrl,
@@ -375,6 +388,8 @@ export default function PostComposer({
         endpoint = '/posts/carousel';
       }
 
+      body.integrations = integrations;
+
       const res = await api(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -394,19 +409,22 @@ export default function PostComposer({
       // Parse per-platform results (image/video/carousel use platform keys; text uses results/errors)
       const platformLabels = { linkedin: 'LinkedIn', twitter: 'X', instagram: 'Instagram', facebook: 'Facebook', threads: 'Threads' };
       let succeeded = [];
+      let succeededPlatformIds = []; // Platform IDs (linkedin, twitter, etc.) for Firestore
       let failed = [];
       const warnings = [];
 
       if (result.results || result.errors) {
         // Text post format
         succeeded = (result.results || []).map((r) => platformLabels[r.platform] || r.platform);
+        succeededPlatformIds = (result.results || []).map((r) => r.platform);
         failed = (result.errors || []).map((e) => `${platformLabels[e.platform] || e.platform}: ${e.error}`);
       } else {
         // Image/video/carousel format
         for (const [platform, r] of Object.entries(result)) {
-          if (platform === 'platformUrls' || !r || typeof r !== 'object') continue;
+          if (platform === 'platformUrls' || platform === 'postRecord' || !r || typeof r !== 'object') continue;
           if (r.success) {
             succeeded.push(platformLabels[platform] || platform);
+            succeededPlatformIds.push(platform);
             if (r.mediaWarning) warnings.push(`${platformLabels[platform] || platform}: ${r.mediaWarning}`);
           } else if (r.error) {
             failed.push(`${platformLabels[platform] || platform}: ${r.error}`);
@@ -438,6 +456,54 @@ export default function PostComposer({
       try {
         sessionStorage.removeItem(DRAFT_KEY);
       } catch (_) {}
+
+      // Save to Firestore – text and image posts
+      const uid = auth.currentUser?.uid;
+      if (uid && succeededPlatformIds.length > 0) {
+        try {
+          let postData;
+          if (result.postRecord) {
+            postData = { ...result.postRecord, content: result.postRecord.content || trimmed };
+          } else if (result.results !== undefined) {
+            // Text post format from server (clientMode returns { id: null, results: [...], errors: [...] })
+            postData = {
+              content: trimmed,
+              platforms: succeededPlatformIds,
+              status: postNow ? 'published' : 'scheduled',
+              publishedAt: postNow ? new Date() : null,
+              scheduledAt: body.scheduleAt ? new Date(body.scheduleAt) : null,
+              platformIds: result.platformIds || Object.fromEntries(
+                (result.results || []).map((r) => [r.platform, r.id || r.postId || ''])
+              ),
+              platformUrls: result.platformUrls || {},
+              imageUrl: body.imageUrl || null,
+              videoUrl: body.videoUrl || null,
+              mediaType: mediaType || 'text',
+              visibility: 'PUBLIC',
+            };
+          } else {
+            // Image/video/carousel – build from succeeded platforms
+            postData = {
+              content: trimmed,
+              platforms: succeededPlatformIds,
+              status: 'published',
+              publishedAt: new Date(),
+              platformIds: Object.fromEntries(
+                succeededPlatformIds.map((p) => [p, result[p]?.postId || result[p]?.id || ''])
+              ),
+              platformUrls: result.platformUrls || {},
+              imageUrl: body.imageUrl,
+              videoUrl: body.videoUrl,
+              mediaItems: body.mediaItems,
+              mediaType,
+              visibility: 'PUBLIC',
+            };
+          }
+          await createPost(uid, postData);
+        } catch (err) {
+          console.warn('Could not save post to Firestore:', err);
+        }
+      }
       onSuccess?.();
     } catch (err) {
       const errMsg = err.message || 'Failed to publish. Please try again.';

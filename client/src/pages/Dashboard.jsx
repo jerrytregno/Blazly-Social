@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useAuth, api } from '../hooks/useAuth';
+import { auth } from '../firebase';
+import { useAuth } from '../hooks/useAuth';
+import { getPosts, getIntegrations } from '../services/firestore';
 import PostComposer from '../components/PostComposer';
 import PostList from '../components/PostList';
 import Integrations from './Integrations';
@@ -15,23 +17,29 @@ export default function Dashboard() {
   const [integrations, setIntegrations] = useState([]);
 
   const loadPosts = () => {
-    api('/posts')
-      .then((r) => r.json())
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return setLoading(false);
+    getPosts(uid, { limit: 50 })
       .then(setPosts)
       .catch(() => setPosts([]))
       .finally(() => setLoading(false));
   };
 
   const loadIntegrations = () => {
-    api('/integrations')
-      .then((r) => r.json())
-      .then(setIntegrations)
-      .catch(() => setIntegrations([]));
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return;
+    getIntegrations(uid).then(setIntegrations).catch(() => setIntegrations([]));
   };
 
   useEffect(() => {
     loadPosts();
     loadIntegrations();
+  }, [user?.id]);
+
+  useEffect(() => {
+    const onChanged = () => { loadIntegrations(); loadPosts(); };
+    window.addEventListener('integrations-changed', onChanged);
+    return () => window.removeEventListener('integrations-changed', onChanged);
   }, []);
 
   const name = user?.name || [user?.profile?.firstName, user?.profile?.lastName].filter(Boolean).join(' ') || 'User';

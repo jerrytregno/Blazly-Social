@@ -8,6 +8,7 @@ import * as profileScrapingService from '../services/profileScraping.service.js'
 import * as competitorAnalysisService from '../services/competitorAnalysis.service.js';
 import { calculateProfileCompletion } from '../services/profileCompletion.service.js';
 import { getProfileOptimizerSuggestions, PLATFORM_PERMISSIONS } from '../services/profileOptimizer.service.js';
+import { isCredentialError } from '../utils/credentialError.js';
 import bcrypt from 'bcryptjs';
 
 const router = Router();
@@ -17,11 +18,18 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   try {
     const userId = req.user._id;
-    const user = await userRepo.findById(userId);
+    // Use allSettled so credential errors on individual collections don't block the whole response
+    const [userResult, profileResult, competitorsResult, integrationsResult] = await Promise.allSettled([
+      userRepo.findById(userId),
+      userProfileRepo.findOne({ userId }),
+      competitorRepo.find({ userId }, { sort: { lastScrapedAt: -1 } }),
+      integrationRepo.find({ userId, isActive: true }),
+    ]);
+    const user = userResult.status === 'fulfilled' ? userResult.value : null;
     if (user?.password) delete user.password;
-    const userProfile = await userProfileRepo.findOne({ userId });
-    const competitors = await competitorRepo.find({ userId }, { sort: { lastScrapedAt: -1 } });
-    const integrations = await integrationRepo.find({ userId, isActive: true });
+    const userProfile = profileResult.status === 'fulfilled' ? profileResult.value : null;
+    const competitors = competitorsResult.status === 'fulfilled' ? competitorsResult.value : [];
+    const integrations = integrationsResult.status === 'fulfilled' ? integrationsResult.value : [];
 
     res.json({
       account: {
@@ -152,12 +160,24 @@ router.post('/scrape', async (req, res) => {
     if (!websiteUrl || typeof websiteUrl !== 'string') {
       return res.status(400).json({ error: 'websiteUrl is required' });
     }
-    const profile = await profileScrapingService.scrapeAndUpdateProfile(
-      req.user._id,
-      websiteUrl.trim(),
-      customScraperApiUrl?.trim() || null
-    );
-    res.json({ ok: true, businessProfile: profile });
+    try {
+      const profile = await profileScrapingService.scrapeAndUpdateProfile(
+        req.user._id,
+        websiteUrl.trim(),
+        customScraperApiUrl?.trim() || null
+      );
+      return res.json({ ok: true, businessProfile: profile });
+    } catch (innerErr) {
+      if (isCredentialError(innerErr)) {
+        // No server Firestore — run AI scraping only, return result for client to save
+        const aiResult = await profileScrapingService.scrapeWebsiteOnly(
+          websiteUrl.trim(),
+          customScraperApiUrl?.trim() || null
+        );
+        return res.json({ ok: true, businessProfile: { ...aiResult, websiteUrl: websiteUrl.trim() }, clientSave: true });
+      }
+      throw innerErr;
+    }
   } catch (err) {
     console.error('Scrape error:', err);
     res.status(400).json({ error: err.message || 'Failed to scrape website' });
@@ -171,20 +191,34 @@ router.post('/competitors', async (req, res) => {
     if (!competitorName || !competitorUrl) {
       return res.status(400).json({ error: 'competitorName and competitorUrl are required' });
     }
-    const competitor = await competitorAnalysisService.scrapeAndAnalyzeCompetitor(
-      req.user._id,
-      competitorName.trim(),
-      competitorUrl.trim(),
-      socialLinks || null
-    );
-    const completion = await calculateProfileCompletion(req.user);
-    await userRepo.findByIdAndUpdate(req.user._id, { profileCompletion: completion });
-    const compObj = competitor;
-    compObj.id = compObj._id?.toString?.() || compObj.id;
-    compObj.socialLinks = competitor.socialLinks
-      ? (competitor.socialLinks instanceof Map ? Object.fromEntries(competitor.socialLinks) : competitor.socialLinks)
-      : {};
-    res.status(201).json({ ok: true, competitor: compObj });
+    let competitor;
+    let clientSave = false;
+    try {
+      competitor = await competitorAnalysisService.scrapeAndAnalyzeCompetitor(
+        req.user._id,
+        competitorName.trim(),
+        competitorUrl.trim(),
+        socialLinks || null
+      );
+      try {
+        const completion = await calculateProfileCompletion(req.user);
+        await userRepo.findByIdAndUpdate(req.user._id, { profileCompletion: completion });
+      } catch (_) {}
+    } catch (err) {
+      if (!isCredentialError(err)) throw err;
+      // Run analysis without DB save
+      clientSave = true;
+      competitor = await competitorAnalysisService.analyzeCompetitorOnly(
+        competitorName.trim(),
+        competitorUrl.trim(),
+        socialLinks || null
+      );
+    }
+    const compObj = { ...competitor };
+    if (!compObj.id) compObj.id = `${req.user._id}_${Date.now()}`;
+    if (compObj.socialLinks instanceof Map) compObj.socialLinks = Object.fromEntries(compObj.socialLinks);
+    compObj.socialLinks = compObj.socialLinks || (socialLinks && typeof socialLinks === 'object' ? socialLinks : {});
+    res.status(201).json({ ok: true, competitor: compObj, clientSave });
   } catch (err) {
     console.error('Competitor scrape error:', err);
     res.status(400).json({ error: err.message || 'Failed to add competitor' });
@@ -209,6 +243,7 @@ router.get('/competitors', async (req, res) => {
       }))
     );
   } catch (err) {
+    if (isCredentialError(err)) return res.json([]);
     res.status(500).json({ error: 'Failed to fetch competitors' });
   }
 });
@@ -217,9 +252,23 @@ router.get('/competitors', async (req, res) => {
 router.get('/optimizer', async (req, res) => {
   try {
     const { platform } = req.query;
-    const results = await getProfileOptimizerSuggestions(req.user._id, platform || null);
+    const results = await getProfileOptimizerSuggestions(req.user._id, platform || null, null);
     res.json({ platforms: results });
   } catch (err) {
+    if (isCredentialError(err)) return res.json({ platforms: [] });
+    console.error('Profile optimizer error:', err);
+    res.status(500).json({ error: 'Failed to load profile suggestions' });
+  }
+});
+
+/** POST /api/profile/optimizer - AI profile optimization with client-supplied integrations */
+router.post('/optimizer', async (req, res) => {
+  try {
+    const { platform, integrations: clientIntegrations } = req.body || {};
+    const results = await getProfileOptimizerSuggestions(req.user._id, platform || null, clientIntegrations || null);
+    res.json({ platforms: results });
+  } catch (err) {
+    if (isCredentialError(err)) return res.json({ platforms: [] });
     console.error('Profile optimizer error:', err);
     res.status(500).json({ error: 'Failed to load profile suggestions' });
   }

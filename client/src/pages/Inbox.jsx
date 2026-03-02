@@ -1,9 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
+import { auth } from '../firebase';
 import { useAuth, api } from '../hooks/useAuth';
+import { getIntegrations, getPosts } from '../services/firestore';
 import './Inbox.css';
+
+const PLATFORM_ICONS = {
+  instagram: '📸',
+  facebook: '📘',
+  twitter: '🐦',
+  threads: '🧵',
+  linkedin: '💼',
+};
 
 export default function Inbox() {
   const { user } = useAuth();
+  const [integrations, setIntegrations] = useState([]);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [platformFilter, setPlatformFilter] = useState('all');
@@ -17,7 +28,39 @@ export default function Inbox() {
   const loadInbox = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api('/inbox');
+      const uid = auth.currentUser?.uid;
+      let ints = [];
+      if (uid) {
+        try { ints = await getIntegrations(uid); } catch (_) {}
+      }
+      setIntegrations(ints);
+
+      // Enrich LinkedIn integration with post URNs from client Firestore
+      // so the server doesn't need to query postRepo (which fails without credentials).
+      if (uid && ints.some((i) => i.platform === 'linkedin')) {
+        try {
+          const posts = await getPosts(uid, { status: 'published', limit: 30 });
+          const linkedinUrns = posts
+            .map((p) => {
+              const ids = p.platformIds instanceof Map ? Object.fromEntries(p.platformIds) : (p.platformIds || {});
+              return ids.linkedin || p.linkedinPostUrn;
+            })
+            .filter(Boolean);
+
+          if (linkedinUrns.length > 0) {
+            ints = ints.map((i) =>
+              i.platform === 'linkedin' ? { ...i, linkedinPostUrns: linkedinUrns } : i
+            );
+          }
+        } catch (_) {}
+      }
+
+      // Use POST /inbox/fetch with client-supplied integrations to bypass server Firestore
+      const res = await api('/inbox/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ integrations: ints }),
+      });
       const data = await res.json();
       setItems(data.items || []);
     } catch (_) { setItems([]); }
@@ -73,7 +116,8 @@ export default function Inbox() {
       }
       const res = await api('/inbox/reply', {
         method: 'POST',
-        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, integrations }),
       });
       const data = await res.json();
       if (res.ok && data.ok) {
@@ -118,7 +162,7 @@ export default function Inbox() {
       <header className="inbox-header">
         <h1>OmniInbox</h1>
         <p className="inbox-desc">
-          Unified AI comment & message manager. Available for Instagram and Facebook business pages. Threads, LinkedIn, and Twitter support coming soon.
+          Unified AI comment &amp; message manager across Instagram, Facebook, LinkedIn, Twitter/X, and Threads.
         </p>
 
         <div className="inbox-toolbar">
@@ -153,23 +197,28 @@ export default function Inbox() {
             <div className="inbox-loading">Loading comments...</div>
           ) : filteredItems.length === 0 ? (
             <div className="inbox-empty">
-              No comments yet. Connect Instagram or Facebook in Integrations to see comments here.
+              No comments or mentions yet. Connect Instagram, Facebook, Twitter/X, Threads, or LinkedIn in Integrations to see activity here.
             </div>
           ) : (
             <ul className="inbox-items">
               {filteredItems.map((item) => (
                 <li
                   key={`${item.platform}-${item.id}`}
-                  className={`inbox-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
+                  className={`inbox-item inbox-item--${item.platform} ${selectedItem?.id === item.id ? 'selected' : ''}`}
                   onClick={() => {
                     setSelectedItem(item);
                     setReplyText('');
                   }}
                 >
-                  <span className="inbox-item__badge">{item.platform}</span>
+                  <div className="inbox-item__top">
+                    <span className={`inbox-item__badge inbox-badge--${item.platform}`}>
+                      {PLATFORM_ICONS[item.platform] || item.platform}
+                    </span>
+                    <span className="inbox-item__type">{item.type || 'comment'}</span>
+                    <span className="inbox-item__time">{formatTime(item.timestamp)}</span>
+                  </div>
                   <span className="inbox-item__author">{item.author}</span>
                   <span className="inbox-item__text">{item.text}</span>
-                  <span className="inbox-item__time">{formatTime(item.timestamp)}</span>
                 </li>
               ))}
             </ul>
@@ -184,19 +233,32 @@ export default function Inbox() {
           ) : (
             <div className="inbox-detail-card">
               <div className="inbox-detail-meta">
-                <span className="inbox-detail-badge">{selectedItem.platform}</span>
+                <span className={`inbox-detail-badge inbox-badge--${selectedItem.platform}`}>
+                  {PLATFORM_ICONS[selectedItem.platform]} {selectedItem.platform}
+                </span>
+                <span className="inbox-item__type">{selectedItem.type || 'comment'}</span>
                 {selectedItem.accountName && (
-                  <span className="inbox-detail-account">{selectedItem.accountName}</span>
+                  <span className="inbox-detail-account">@{selectedItem.accountName}</span>
                 )}
               </div>
-              <div className="inbox-detail-author">{selectedItem.author}</div>
+              <div className="inbox-detail-author">
+                {selectedItem.author}
+                {selectedItem.authorUsername && selectedItem.authorUsername !== selectedItem.author && (
+                  <span style={{ color: 'var(--text-muted)', fontSize: '0.85em', marginLeft: 6 }}>
+                    @{selectedItem.authorUsername}
+                  </span>
+                )}
+              </div>
               <p className="inbox-detail-text">{selectedItem.text}</p>
               {selectedItem.postPreview && (
-                <p className="inbox-detail-post">Post: {selectedItem.postPreview}...</p>
+                <p className="inbox-detail-post">↩ replying to: {selectedItem.postPreview}</p>
+              )}
+              {selectedItem.likeCount > 0 && (
+                <p className="inbox-detail-likes">❤️ {selectedItem.likeCount} likes</p>
               )}
               {selectedItem.permalink && (
                 <a href={selectedItem.permalink} target="_blank" rel="noopener noreferrer" className="inbox-detail-link">
-                  View on {selectedItem.platform}
+                  View on {selectedItem.platform} ↗
                 </a>
               )}
 

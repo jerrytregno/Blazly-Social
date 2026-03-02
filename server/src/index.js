@@ -7,7 +7,11 @@ import { config } from './config.js';
 import { startScheduler } from './scheduler.js';
 import app from './app.js';
 
-await connectDb();
+try {
+  await connectDb();
+} catch (e) {
+  console.warn('Firestore not available (no credentials). Using client-side Firestore mode.');
+}
 startScheduler();
 
 app.listen(config.port, () => {

@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { auth } from '../firebase';
 import { useAuth, api } from '../hooks/useAuth';
+import { getIntegrations } from '../services/firestore';
 import PlatformLogo from './PlatformLogo';
 import './AppLayout.css';
 
@@ -62,14 +64,16 @@ export default function AppLayout({ children }) {
   });
 
   const loadIntegrations = () => {
-    api('/integrations').then((r) => r.json()).then(setIntegrations).catch(() => setIntegrations([]));
+    const uid = auth.currentUser?.uid || user?.id;
+    if (!uid) return setIntegrations([]);
+    getIntegrations(uid).then(setIntegrations).catch(() => setIntegrations([]));
   };
 
   useEffect(() => {
     loadIntegrations();
     const params = new URLSearchParams(location.search);
     if (params.get('integration') && params.get('status') === 'connected') loadIntegrations();
-  }, [location.search, location.pathname]);
+  }, [user?.id, location.search, location.pathname]);
 
   useEffect(() => {
     const onIntegrationsChanged = () => loadIntegrations();
@@ -78,14 +82,35 @@ export default function AppLayout({ children }) {
   }, []);
 
   const handleConnectPlatform = async (p) => {
-    const int = integrations.find((i) => i.platform === p && i.isActive);
+    const arr = Array.isArray(integrations) ? integrations : [];
+    const int = arr.find((i) => i.platform === p && i.isActive);
     if (int) {
       navigate(`/home?platform=${p}`);
       return;
     }
+    if (!auth.currentUser) {
+      alert('Please sign in first');
+      navigate('/');
+      return;
+    }
     try {
-      await api('/auth/session', { method: 'POST' });
-      window.location.href = `/api/auth/integrations/${p}`;
+      const res = await api(`/auth/integrations/${p}`, {
+        redirect: 'manual',
+        headers: { Accept: 'application/json' },
+      });
+      if (res.status === 401) {
+        alert('Session expired. Please sign in again.');
+        navigate('/?next=' + encodeURIComponent('/integrations'));
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      const url = data.redirectUrl || res.headers.get('Location');
+      if (url) {
+        const popup = window.open(url, 'oauth', 'width=600,height=700');
+        if (!popup) window.location.href = url;
+      } else {
+        alert(data.error || 'Failed to start connection.');
+      }
     } catch (_) { alert('Failed to start connection.'); }
   };
 
@@ -96,7 +121,7 @@ export default function AppLayout({ children }) {
 
   const isActive = (path) => location.pathname === path;
 
-  const connectedIntegrations = integrations.filter((i) => i.isActive);
+  const connectedIntegrations = Array.isArray(integrations) ? integrations.filter((i) => i.isActive) : [];
   const userName = user?.name || [user?.profile?.firstName, user?.profile?.lastName].filter(Boolean).join(' ') || user?.email?.split('@')[0] || 'there';
   const { text: greetingText, icon: greetingIcon } = getGreeting();
 

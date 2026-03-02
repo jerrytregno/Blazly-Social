@@ -15,13 +15,14 @@ import { resolveImageUrl } from './utils/imageUrl.js';
 import { storeLinkedInPostInFirebase } from './services/linkedinStorage.service.js';
 
 export async function processScheduledPosts() {
-  const now = new Date();
-  const due = await postRepo.find(
-    { status: 'scheduled', scheduledAt: { $lte: now } },
-    { limit: 10 }
-  );
+  try {
+    const now = new Date();
+    const due = await postRepo.find(
+      { status: 'scheduled', scheduledAt: { $lte: now } },
+      { limit: 10 }
+    );
 
-  for (const post of due) {
+    for (const post of due) {
     console.log(`Processing scheduled post: ${post._id}`);
     const results = [];
     const errors = [];
@@ -248,6 +249,13 @@ export async function processScheduledPosts() {
       });
     }
   }
+  } catch (err) {
+    if (err.message?.includes('Could not load the default credentials') || err.message?.includes('credentials')) {
+      // Firestore not available (no service account) - skip silently
+      return;
+    }
+    console.error('Scheduler (scheduled posts):', err.message);
+  }
 }
 
 export async function processTrendPolling() {
@@ -261,6 +269,9 @@ export async function processTrendPolling() {
       }
     }
   } catch (err) {
+    if (err.message?.includes('Could not load the default credentials') || err.message?.includes('credentials')) {
+      return; // Firestore not available (no service account) - skip silently
+    }
     console.error('Trend polling error:', err);
   }
 }
@@ -276,6 +287,9 @@ export async function processKeywordPolling() {
       }
     }
   } catch (err) {
+    if (err.message?.includes('Could not load the default credentials') || err.message?.includes('credentials')) {
+      return; // Firestore not available (no service account) - skip silently
+    }
     console.error('Keyword polling error:', err);
   }
 }

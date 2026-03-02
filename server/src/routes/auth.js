@@ -337,13 +337,13 @@ router.post('/facebook/select-page', async (req, res) => {
     await integrationRepo.findOneAndUpdate(
       { userId: user._id, platform: 'facebook' },
       {
-      userId: user._id,
-      platform: 'facebook',
-      platformUserId: facebookId,
-      accessToken,
-      refreshToken: undefined,
-      tokenExpiresAt: tokenExpiresAt,
-      facebookPageId: selectedPage.id,
+        userId: user._id,
+        platform: 'facebook',
+        platformUserId: facebookId,
+        accessToken,
+        refreshToken: undefined,
+        tokenExpiresAt: tokenExpiresAt,
+        facebookPageId: selectedPage.id,
         facebookPageAccessToken: selectedPage.access_token,
         facebookPageName: selectedPage.name,
         profile: { name, profilePicture: picture },
@@ -491,11 +491,11 @@ router.post('/session', async (req, res) => {
 
   const firebaseToken = authHeader.split('Bearer ')[1];
   try {
-    const { auth: firebaseAuth } = await import('../firebase.js');
-    if (!firebaseAuth) {
-      return res.status(503).json({ error: 'Firebase Auth temporarily unavailable' });
+    const { verifyFirebaseIdToken } = await import('../services/firebaseTokenVerify.js');
+    const decodedToken = await verifyFirebaseIdToken(firebaseToken);
+    if (!decodedToken) {
+      return res.status(401).json({ error: 'Invalid token' });
     }
-    const decodedToken = await firebaseAuth.verifyIdToken(firebaseToken);
 
     let user = await userRepo.findOne({ firebaseUid: decodedToken.uid });
     if (!user && decodedToken.email) {
@@ -503,8 +503,17 @@ router.post('/session', async (req, res) => {
     }
 
     if (!user) {
-      return res.status(403).json({
-        error: 'Account not found. Please sign up with email first, then you can sign in with Google.',
+      user = await userRepo.create({
+        email: decodedToken.email,
+        name: decodedToken.name || '',
+        firebaseUid: decodedToken.uid,
+        profile: {
+          profilePicture: decodedToken.picture || `https://ui-avatars.com/api/?name=${encodeURIComponent(decodedToken.name || 'User')}&background=random`,
+        },
+        settings: {
+          theme: 'light',
+          notifications: true
+        }
       });
     }
 

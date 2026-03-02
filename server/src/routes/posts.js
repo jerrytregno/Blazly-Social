@@ -16,6 +16,38 @@ import { storeLinkedInPostInFirebase } from '../services/linkedinStorage.service
 const router = Router();
 router.use(requireAuth);
 
+/** Get integrations: from request body (client-side mode) or Firestore */
+async function getIntegrationsForPost(req) {
+  const fromBody = req.body?.integrations;
+  if (Array.isArray(fromBody) && fromBody.length > 0) {
+    return fromBody.filter((i) => i.isActive !== false);
+  }
+  try {
+    return await integrationRepo.find({ userId: req.user._id, isActive: true });
+  } catch (e) {
+    return [];
+  }
+}
+
+/** Whether we're in client-side mode (integrations from body, no Firestore write) */
+function isClientMode(req) {
+  return Array.isArray(req.body?.integrations) && req.body.integrations.length > 0;
+}
+
+/** Get integration for a platform: from body or Firestore */
+async function getIntegrationForPlatform(req, platform) {
+  const fromBody = req.body?.integrations;
+  if (Array.isArray(fromBody)) {
+    const found = fromBody.find((i) => i.platform === platform && i.isActive !== false);
+    if (found) return found;
+  }
+  try {
+    return await integrationRepo.findOne({ userId: req.user._id, platform, isActive: true });
+  } catch (_) {
+    return null;
+  }
+}
+
 function formatPostForResponse(post) {
   const obj = post;
   obj.id = (obj._id || post._id)?.toString();
@@ -96,15 +128,24 @@ router.get('/:id/urls', async (req, res) => {
 /** POST /posts/:id/analytics - Fetch and cache analytics for a post */
 router.post('/:id/analytics', async (req, res) => {
   try {
-    const post = await postRepo.findOne({
-      _id: req.params.id,
-      userId: req.user._id,
-    });
+    // Accept post data from client body (avoids server Firestore lookup)
+    let post = req.body?.post || null;
+    if (!post) {
+      try {
+        post = await postRepo.findOne({ _id: req.params.id, userId: req.user._id });
+      } catch (dbErr) {
+        const { isCredentialError } = await import('../utils/credentialError.js');
+        if (isCredentialError(dbErr)) return res.json({ analytics: {} });
+        throw dbErr;
+      }
+    }
     if (!post) return res.status(404).json({ error: 'Post not found' });
     const { fetchPostAnalytics } = await import('../services/analytics.service.js');
     const analytics = await fetchPostAnalytics(post, req.user._id);
     res.json({ analytics });
   } catch (err) {
+    const { isCredentialError } = await import('../utils/credentialError.js');
+    if (isCredentialError(err)) return res.json({ analytics: {} });
     console.error('Post analytics fetch error:', err);
     res.status(500).json({ error: err.message });
   }
@@ -217,7 +258,6 @@ router.post('/debug/instagram/token', async (req, res) => {
 
 router.post('/', async (req, res) => {
   const { content, scheduleAt, visibility = 'PUBLIC', platforms = [] } = req.body || {};
-  console.log(req.body);
   if (!content || typeof content !== 'string') {
     return res.status(400).json({ error: 'content is required' });
   }
@@ -225,18 +265,17 @@ router.post('/', async (req, res) => {
   if (!trimmed) return res.status(400).json({ error: 'content cannot be empty' });
 
   const postNow = !scheduleAt;
-  if (postNow) {
-    // Get active integrations
-    const integrations = await integrationRepo.find({
-      userId: req.user._id,
-      isActive: true
-    });
+  const clientMode = isClientMode(req);
+  const integrations = await getIntegrationsForPost(req);
 
+  if (postNow) {
     const activeIntegrations = integrations.filter(i => platforms.length === 0 || platforms.includes(i.platform));
 
     if (activeIntegrations.length === 0) {
       return res.status(400).json({
-        error: 'No active integrations found. Please connect at least one platform.',
+        error: clientMode
+          ? 'No active integrations for selected platforms. Pass integrations in the request body.'
+          : 'No active integrations found. Please connect at least one platform.',
       });
     }
 
@@ -321,15 +360,23 @@ router.post('/', async (req, res) => {
                 continue;
               }
               twitterToken = refreshed.access_token;
-              await integrationRepo.findOneAndUpdate(
-                { userId: req.user._id, platform: 'twitter' },
-                {
-                  accessToken: refreshed.access_token,
-                  refreshToken: refreshed.refresh_token || integration.refreshToken,
-                  tokenExpiresAt: new Date(Date.now() + (refreshed.expires_in || 7200) * 1000),
-                },
-                { upsert: false, new: true }
-              );
+              if (!clientMode) {
+                try {
+                  await integrationRepo.findOneAndUpdate(
+                    { userId: req.user._id, platform: 'twitter' },
+                    {
+                      accessToken: refreshed.access_token,
+                      refreshToken: refreshed.refresh_token || integration.refreshToken,
+                      tokenExpiresAt: new Date(Date.now() + (refreshed.expires_in || 7200) * 1000),
+                    },
+                    { upsert: false, new: true }
+                  );
+                } catch (_) {}
+              } else {
+                integration.accessToken = refreshed.access_token;
+                integration.refreshToken = refreshed.refresh_token || integration.refreshToken;
+                integration.tokenExpiresAt = new Date(Date.now() + (refreshed.expires_in || 7200) * 1000);
+              }
             }
             result = await createTwitterPost(twitterToken, trimmed);
             // If Unauthorized and we have refresh token, try refresh + retry (handles integrations without tokenExpiresAt)
@@ -337,15 +384,23 @@ router.post('/', async (req, res) => {
               const refreshed = await refreshTwitterToken(integration.refreshToken);
               if (!refreshed.error) {
                 twitterToken = refreshed.access_token;
-                await integrationRepo.findOneAndUpdate(
-                  { userId: req.user._id, platform: 'twitter' },
-                  {
-                    accessToken: refreshed.access_token,
-                    refreshToken: refreshed.refresh_token || integration.refreshToken,
-                    tokenExpiresAt: new Date(Date.now() + (refreshed.expires_in || 7200) * 1000),
-                  },
-                  { upsert: false, new: true }
-                );
+                if (!clientMode) {
+                  try {
+                    await integrationRepo.findOneAndUpdate(
+                      { userId: req.user._id, platform: 'twitter' },
+                      {
+                        accessToken: refreshed.access_token,
+                        refreshToken: refreshed.refresh_token || integration.refreshToken,
+                        tokenExpiresAt: new Date(Date.now() + (refreshed.expires_in || 7200) * 1000),
+                      },
+                      { upsert: false, new: true }
+                    );
+                  } catch (_) {}
+                } else {
+                  integration.accessToken = refreshed.access_token;
+                  integration.refreshToken = refreshed.refresh_token || integration.refreshToken;
+                  integration.tokenExpiresAt = new Date(Date.now() + (refreshed.expires_in || 7200) * 1000);
+                }
                 result = await createTwitterPost(twitterToken, trimmed);
               }
             }
@@ -355,7 +410,7 @@ router.post('/', async (req, res) => {
             break;
 
           case 'threads':
-            if (!integration.accessToken || !integration.platformUserId) {
+            if (!integration.accessToken) {
               errors.push({ platform: 'threads', error: 'Threads credentials missing' });
               continue;
             }
@@ -366,7 +421,8 @@ router.post('/', async (req, res) => {
             result = await createThreadsPost(
               integration.accessToken,
               integration.platformUserId,
-              trimmed
+              trimmed,
+              { username: integration.platformUsername }
             );
             await integrationRepo.updateLastUsed(integration._id, new Date());
             break;
@@ -443,7 +499,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Create post record
     const postRecord = {
       userId: req.user._id,
       content: trimmed,
@@ -459,19 +514,19 @@ router.post('/', async (req, res) => {
       platformUrls: results.reduce((acc, r) => ({ ...acc, [r.platform]: r.url }), {}),
     };
 
-    const newPost = await postRepo.create(postRecord);
-    const postObj = { id: newPost._id.toString(), ...newPost };
-
-    // Store LinkedIn posts in Firebase Storage for backup
-    if (postRecord.platforms?.includes('linkedin')) {
-      storeLinkedInPostInFirebase(req.user._id.toString(), newPost).catch(() => {});
+    let postObj;
+    if (clientMode) {
+      postObj = { id: null, ...postRecord };
+    } else {
+      const newPost = await postRepo.create(postRecord);
+      postObj = { id: newPost._id.toString(), ...newPost };
+      if (postRecord.platforms?.includes('linkedin')) {
+        storeLinkedInPostInFirebase(req.user._id.toString(), newPost).catch(() => {});
+      }
     }
 
     postObj.results = results;
-    if (errors.length > 0) {
-      postObj.errors = errors;
-    }
-
+    if (errors.length > 0) postObj.errors = errors;
     return res.status(201).json(postObj);
   }
 
@@ -496,6 +551,9 @@ router.post('/', async (req, res) => {
     scheduledAt: scheduledAtDate,
   };
 
+  if (clientMode) {
+    return res.status(201).json({ id: null, ...postRecord });
+  }
   const newPost = await postRepo.create(postRecord);
   res.status(201).json(formatPostForResponse(newPost));
 });
@@ -577,6 +635,7 @@ router.post('/image', async (req, res) => {
   try {
     const { content, imageUrl, platforms } = req.body;
     const userId = req.user._id;
+    const clientMode = isClientMode(req);
 
     if (!imageUrl || !platforms || platforms.length === 0) {
       return res.status(400).json({ error: 'imageUrl and platforms are required' });
@@ -611,11 +670,7 @@ router.post('/image', async (req, res) => {
     // Handle Instagram posting
     if (platforms.includes('instagram')) {
       try {
-        const integration = await integrationRepo.findOne({
-          userId: req.user._id,
-          platform: 'instagram',
-          isActive: true
-        });
+        const integration = await getIntegrationForPlatform(req, 'instagram');
 
         if (!integration) {
           results.instagram = { success: false, error: 'Instagram not connected' };
@@ -661,7 +716,6 @@ router.post('/image', async (req, res) => {
 
                 console.log('Publish response:', { published, error: published?.error });
                 if (published && published.media_id) {
-                  // Save to database
                   const postRecord = {
                     userId: req.user._id,
                     content: (content && content.trim()) ? content.trim() : ' ',
@@ -672,11 +726,11 @@ router.post('/image', async (req, res) => {
                     status: 'published',
                     publishedAt: new Date(),
                   };
-                  await postRepo.create(postRecord);
-
-                  await integrationRepo.updateLastUsed(integration._id, new Date());
-
-                  results.instagram = { success: true, postId: published.media_id };
+                  if (!isClientMode(req)) {
+                    await postRepo.create(postRecord);
+                    try { await integrationRepo.updateLastUsed(integration._id, new Date()); } catch (_) {}
+                  }
+                  results.instagram = { success: true, postId: published.media_id, postRecord };
                 } else {
                   results.instagram = { success: false, error: published?.error || 'Failed to publish media' };
                 }
@@ -693,11 +747,7 @@ router.post('/image', async (req, res) => {
     // Handle LinkedIn posting
     if (platforms.includes('linkedin')) {
       try {
-        const integration = await integrationRepo.findOne({
-          userId: req.user._id,
-          platform: 'linkedin',
-          isActive: true
-        });
+        const integration = await getIntegrationForPlatform(req, 'linkedin');
 
         if (!integration) {
           results.linkedin = { success: false, error: 'LinkedIn not connected' };
@@ -717,26 +767,29 @@ router.post('/image', async (req, res) => {
             results.linkedin = { success: true, postId: result.postUrn };
             await incrementLinkedInUsage(req.user._id);
 
-            // Save post record (avoiding duplicates if multiple platforms)
-            const existing = await postRepo.findOne({ userId: req.user._id, content, imageUrl, status: 'published' });
-            let postRecord;
-            if (!existing) {
-              postRecord = await postRepo.create({
-                userId: req.user._id,
-                content: (content && content.trim()) ? content.trim() : ' ',
-                platforms: ['linkedin'],
-                mediaType: 'image',
-                imageUrl,
-                platformIds: { linkedin: result.postUrn },
-                status: 'published',
-                publishedAt: new Date(),
-              });
-            } else {
-              const platforms = [...(existing.platforms || []), 'linkedin'];
-              const platformIds = { ...(existing.platformIds || {}), linkedin: result.postUrn };
-              postRecord = await postRepo.findByIdAndUpdate(existing._id, { platforms, platformIds });
+            if (!clientMode) {
+              try {
+                const existing = await postRepo.findOne({ userId: req.user._id, content, imageUrl, status: 'published' });
+                let postRecord;
+                if (!existing) {
+                  postRecord = await postRepo.create({
+                    userId: req.user._id,
+                    content: (content && content.trim()) ? content.trim() : ' ',
+                    platforms: ['linkedin'],
+                    mediaType: 'image',
+                    imageUrl,
+                    platformIds: { linkedin: result.postUrn },
+                    status: 'published',
+                    publishedAt: new Date(),
+                  });
+                } else {
+                  const platforms = [...(existing.platforms || []), 'linkedin'];
+                  const platformIds = { ...(existing.platformIds || {}), linkedin: result.postUrn };
+                  postRecord = await postRepo.findByIdAndUpdate(existing._id, { platforms, platformIds });
+                }
+                storeLinkedInPostInFirebase(req.user._id.toString(), postRecord).catch(() => {});
+              } catch (_) {}
             }
-            storeLinkedInPostInFirebase(req.user._id.toString(), postRecord).catch(() => {});
           }
         }
       } catch (error) {
@@ -748,22 +801,18 @@ router.post('/image', async (req, res) => {
     // Handle Threads posting
     if (platforms.includes('threads')) {
       try {
-        const integration = await integrationRepo.findOne({
-          userId: req.user._id,
-          platform: 'threads',
-          isActive: true
-        });
+        const integration = await getIntegrationForPlatform(req, 'threads');
 
         if (!integration) {
           results.threads = { success: false, error: 'Threads not connected' };
-        } else if (!integration.platformUserId) {
-          results.threads = { success: false, error: 'Threads user ID missing' };
+        } else if (!integration.accessToken) {
+          results.threads = { success: false, error: 'Threads access token missing' };
         } else {
           const result = await createThreadsPost(
             integration.accessToken,
             integration.platformUserId,
             content || '',
-            { image_url: resolvedImageUrl }
+            { image_url: resolvedImageUrl, username: integration.platformUsername }
           );
 
           if (result.error) {
@@ -773,24 +822,27 @@ router.post('/image', async (req, res) => {
             results.threads = { success: false, error: errMsg };
           } else {
             results.threads = { success: true, postId: result.id, url: result.url };
-            await integrationRepo.updateLastUsed(integration._id, new Date());
-
-            const existing = await postRepo.findOne({ userId: req.user._id, content, imageUrl, status: 'published' });
-            if (!existing) {
-              await postRepo.create({
-                userId: req.user._id,
-                content: (content && content.trim()) ? content.trim() : ' ',
-                platforms: ['threads'],
-                mediaType: 'image',
-                imageUrl,
-                platformIds: { threads: result.id },
-                status: 'published',
-                publishedAt: new Date(),
-              });
-            } else {
-              const platforms = [...(existing.platforms || []), 'threads'];
-              const platformIds = { ...(existing.platformIds || {}), threads: result.id };
-              await postRepo.findByIdAndUpdate(existing._id, { platforms, platformIds });
+            if (!clientMode) {
+              try {
+                await integrationRepo.updateLastUsed(integration._id, new Date());
+                const existing = await postRepo.findOne({ userId: req.user._id, content, imageUrl, status: 'published' });
+                if (!existing) {
+                  await postRepo.create({
+                    userId: req.user._id,
+                    content: (content && content.trim()) ? content.trim() : ' ',
+                    platforms: ['threads'],
+                    mediaType: 'image',
+                    imageUrl,
+                    platformIds: { threads: result.id },
+                    status: 'published',
+                    publishedAt: new Date(),
+                  });
+                } else {
+                  const platforms = [...(existing.platforms || []), 'threads'];
+                  const platformIds = { ...(existing.platformIds || {}), threads: result.id };
+                  await postRepo.findByIdAndUpdate(existing._id, { platforms, platformIds });
+                }
+              } catch (_) {}
             }
           }
         }
@@ -806,11 +858,7 @@ router.post('/image', async (req, res) => {
     // Handle Facebook image posting
     if (platforms.includes('facebook')) {
       try {
-        const integration = await integrationRepo.findOne({
-          userId: req.user._id,
-          platform: 'facebook',
-          isActive: true
-        });
+        const integration = await getIntegrationForPlatform(req, 'facebook');
 
         if (!integration) {
           results.facebook = { success: false, error: 'Facebook not connected' };
@@ -828,25 +876,29 @@ router.post('/image', async (req, res) => {
             results.facebook = { success: false, error: result.error };
           } else {
             results.facebook = { success: true, postId: result.id, url: result.url };
-            await integrationRepo.updateLastUsed(integration._id, new Date());
-            const existing = await postRepo.findOne({ userId: req.user._id, content, imageUrl, status: 'published' });
-            if (existing) {
-              if (!existing.platforms?.includes('facebook')) {
-                const platforms = [...(existing.platforms || []), 'facebook'];
-                const platformIds = { ...(existing.platformIds || {}), facebook: result.id };
-                await postRepo.findByIdAndUpdate(existing._id, { platforms, platformIds });
-              }
-            } else {
-              await postRepo.create({
-                userId: req.user._id,
-                content: (content && content.trim()) ? content.trim() : ' ',
-                platforms: ['facebook'],
-                mediaType: 'image',
-                imageUrl,
-                platformIds: { facebook: result.id },
-                status: 'published',
-                publishedAt: new Date(),
-              });
+            if (!clientMode) {
+              try {
+                await integrationRepo.updateLastUsed(integration._id, new Date());
+                const existing = await postRepo.findOne({ userId: req.user._id, content, imageUrl, status: 'published' });
+                if (existing) {
+                  if (!existing.platforms?.includes('facebook')) {
+                    const platforms = [...(existing.platforms || []), 'facebook'];
+                    const platformIds = { ...(existing.platformIds || {}), facebook: result.id };
+                    await postRepo.findByIdAndUpdate(existing._id, { platforms, platformIds });
+                  }
+                } else {
+                  await postRepo.create({
+                    userId: req.user._id,
+                    content: (content && content.trim()) ? content.trim() : ' ',
+                    platforms: ['facebook'],
+                    mediaType: 'image',
+                    imageUrl,
+                    platformIds: { facebook: result.id },
+                    status: 'published',
+                    publishedAt: new Date(),
+                  });
+                }
+              } catch (_) {}
             }
           }
         }
@@ -859,11 +911,7 @@ router.post('/image', async (req, res) => {
     // Handle Twitter - upload image and post with media
     if (platforms.includes('twitter')) {
       try {
-        const integration = await integrationRepo.findOne({
-          userId: req.user._id,
-          platform: 'twitter',
-          isActive: true
-        });
+        const integration = await getIntegrationForPlatform(req, 'twitter');
         if (!integration) {
           results.twitter = { success: false, error: 'Twitter not connected' };
         } else {
@@ -873,15 +921,22 @@ router.post('/image', async (req, res) => {
             const refreshed = await refreshTwitterToken(integration.refreshToken);
             if (!refreshed.error) {
               twitterToken = refreshed.access_token;
-              await integrationRepo.findOneAndUpdate(
-                { userId: req.user._id, platform: 'twitter' },
-                {
-                  accessToken: refreshed.access_token,
-                  refreshToken: refreshed.refresh_token || integration.refreshToken,
-                  tokenExpiresAt: new Date(Date.now() + (refreshed.expires_in || 7200) * 1000),
-                },
-                { upsert: false, new: true }
-              );
+              if (!clientMode) {
+                try {
+                  await integrationRepo.findOneAndUpdate(
+                    { userId: req.user._id, platform: 'twitter' },
+                    {
+                      accessToken: refreshed.access_token,
+                      refreshToken: refreshed.refresh_token || integration.refreshToken,
+                      tokenExpiresAt: new Date(Date.now() + (refreshed.expires_in || 7200) * 1000),
+                    },
+                    { upsert: false, new: true }
+                  );
+                } catch (_) {}
+              } else {
+                integration.accessToken = refreshed.access_token;
+                integration.refreshToken = refreshed.refresh_token || integration.refreshToken;
+              }
             }
           }
           let mediaIds = [];
@@ -900,24 +955,28 @@ router.post('/image', async (req, res) => {
               url: result.url,
               ...(uploadResult.error && { mediaWarning: uploadResult.error }),
             };
-            const existing = await postRepo.findOne({ userId: req.user._id, content, imageUrl, status: 'published' });
-            if (existing) {
-              if (!existing.platforms?.includes('twitter')) {
-                const platforms = [...(existing.platforms || []), 'twitter'];
-                const platformIds = { ...(existing.platformIds || {}), twitter: result.id };
-                await postRepo.findByIdAndUpdate(existing._id, { platforms, platformIds });
-              }
-            } else {
-              await postRepo.create({
-                userId: req.user._id,
-                content: (content && content.trim()) ? content.trim() : ' ',
-                platforms: ['twitter'],
-                mediaType: 'image',
-                imageUrl,
-                platformIds: { twitter: result.id },
-                status: 'published',
-                publishedAt: new Date(),
-              });
+            if (!clientMode) {
+              try {
+                const existing = await postRepo.findOne({ userId: req.user._id, content, imageUrl, status: 'published' });
+                if (existing) {
+                  if (!existing.platforms?.includes('twitter')) {
+                    const platforms = [...(existing.platforms || []), 'twitter'];
+                    const platformIds = { ...(existing.platformIds || {}), twitter: result.id };
+                    await postRepo.findByIdAndUpdate(existing._id, { platforms, platformIds });
+                  }
+                } else {
+                  await postRepo.create({
+                    userId: req.user._id,
+                    content: (content && content.trim()) ? content.trim() : ' ',
+                    platforms: ['twitter'],
+                    mediaType: 'image',
+                    imageUrl,
+                    platformIds: { twitter: result.id },
+                    status: 'published',
+                    publishedAt: new Date(),
+                  });
+                }
+              } catch (_) {}
             }
           }
         }
@@ -934,7 +993,25 @@ router.post('/image', async (req, res) => {
     if (results.facebook?.url) platformUrls.facebook = results.facebook.url;
     if (results.twitter?.url) platformUrls.twitter = results.twitter.url;
 
-    res.json({ ...results, platformUrls });
+    const out = { ...results, platformUrls };
+    if (clientMode) {
+      const succeededPlatforms = Object.keys(results).filter((k) => results[k]?.success);
+      const platformIds = {};
+      succeededPlatforms.forEach((p) => {
+        platformIds[p] = results[p]?.postId || results[p]?.id || '';
+      });
+      out.postRecord = {
+        content: (content && content.trim()) ? content.trim() : ' ',
+        platforms: succeededPlatforms,
+        status: 'published',
+        publishedAt: new Date(),
+        platformIds,
+        platformUrls,
+        imageUrl,
+        mediaType: 'image',
+      };
+    }
+    res.json(out);
   } catch (error) {
     console.error('Image publishing error:', error);
     res.status(500).json({ error: error.message });
@@ -946,6 +1023,7 @@ router.post('/video', async (req, res) => {
   try {
     const { content, videoUrl, platforms, mediaType } = req.body;
     const userId = req.user._id;
+    const clientMode = isClientMode(req);
 
     if (!videoUrl || !platforms || platforms.length === 0) {
       return res.status(400).json({ error: 'videoUrl and platforms are required' });
@@ -956,11 +1034,7 @@ router.post('/video', async (req, res) => {
     // Handle Instagram posting
     if (platforms.includes('instagram')) {
       try {
-        const integration = await integrationRepo.findOne({
-          userId: req.user._id,
-          platform: 'instagram',
-          isActive: true
-        });
+        const integration = await getIntegrationForPlatform(req, 'instagram');
 
         if (!integration) {
           results.instagram = { success: false, error: 'Instagram not connected' };
@@ -1007,7 +1081,6 @@ router.post('/video', async (req, res) => {
                 );
 
                 if (published && published.media_id) {
-                  // Save to database
                   const postRecord = {
                     userId: req.user._id,
                     content: (content && content.trim()) ? content.trim() : ' ',
@@ -1018,11 +1091,13 @@ router.post('/video', async (req, res) => {
                     status: 'published',
                     publishedAt: new Date(),
                   };
-                  await postRepo.create(postRecord);
-
-                  await integrationRepo.updateLastUsed(integration._id, new Date());
-
-                  results.instagram = { success: true, postId: published.media_id };
+                  if (!clientMode) {
+                    try {
+                      await postRepo.create(postRecord);
+                      await integrationRepo.updateLastUsed(integration._id, new Date());
+                    } catch (_) {}
+                  }
+                  results.instagram = { success: true, postId: published.media_id, postRecord };
                 } else {
                   results.instagram = { success: false, error: 'Failed to publish media' };
                 }
@@ -1036,6 +1111,9 @@ router.post('/video', async (req, res) => {
       }
     }
 
+    if (clientMode && results.instagram?.postRecord) {
+      results.postRecord = results.instagram.postRecord;
+    }
     res.json(results);
   } catch (error) {
     console.error('Video publishing error:', error);
@@ -1048,6 +1126,7 @@ router.post('/carousel', async (req, res) => {
   try {
     const { content, mediaItems, platforms } = req.body;
     const userId = req.user._id;
+    const clientMode = isClientMode(req);
 
     if (!mediaItems || !Array.isArray(mediaItems) || mediaItems.length < 2 || !platforms || platforms.length === 0) {
       return res.status(400).json({ error: 'At least 2 mediaItems and platforms are required' });
@@ -1058,11 +1137,7 @@ router.post('/carousel', async (req, res) => {
     // Handle Instagram posting
     if (platforms.includes('instagram')) {
       try {
-        const integration = await integrationRepo.findOne({
-          userId: req.user._id,
-          platform: 'instagram',
-          isActive: true
-        });
+        const integration = await getIntegrationForPlatform(req, 'instagram');
 
         if (!integration) {
           results.instagram = { success: false, error: 'Instagram not connected' };
@@ -1134,7 +1209,6 @@ router.post('/carousel', async (req, res) => {
                   );
 
                   if (published && published.media_id) {
-                    // Save to database
                     const postRecord = {
                       userId: req.user._id,
                       content: (content && content.trim()) ? content.trim() : ' ',
@@ -1145,11 +1219,13 @@ router.post('/carousel', async (req, res) => {
                       status: 'published',
                       publishedAt: new Date(),
                     };
-                    await postRepo.create(postRecord);
-
-                    await integrationRepo.updateLastUsed(integration._id, new Date());
-
-                    results.instagram = { success: true, postId: published.media_id };
+                    if (!clientMode) {
+                      try {
+                        await postRepo.create(postRecord);
+                        await integrationRepo.updateLastUsed(integration._id, new Date());
+                      } catch (_) {}
+                    }
+                    results.instagram = { success: true, postId: published.media_id, postRecord };
                   } else {
                     results.instagram = { success: false, error: 'Failed to publish carousel' };
                   }
@@ -1164,6 +1240,9 @@ router.post('/carousel', async (req, res) => {
       }
     }
 
+    if (clientMode && results.instagram?.postRecord) {
+      results.postRecord = results.instagram.postRecord;
+    }
     res.json(results);
   } catch (error) {
     console.error('Carousel publishing error:', error);

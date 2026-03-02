@@ -10,7 +10,9 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
+import { auth } from '../firebase';
 import { api } from '../hooks/useAuth';
+import { getPosts, getIntegrations, updatePost, createPost } from '../services/firestore';
 import LoadingScreen from '../components/LoadingScreen';
 import PlatformLogo from '../components/PlatformLogo';
 import './Report.css';
@@ -89,27 +91,69 @@ export default function Report() {
   const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [expandedPost, setExpandedPost] = useState(null);
   const [error, setError] = useState(null);
-  const [autoRefreshDone, setAutoRefreshDone] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+
+  /** Build recharts-compatible data from a posts array (uses stored analytics if present). */
+  const buildChartFromPosts = (postsArr) => {
+    const byDate = {};
+    postsArr.forEach((p) => {
+      const d = new Date(p.publishedAt || p.createdAt);
+      if (isNaN(d.getTime())) return;
+      const key = d.toISOString().slice(0, 10);
+      if (!byDate[key]) byDate[key] = { date: key };
+      const analytics = p.analytics || {};
+      (p.platforms || []).forEach((pl) => {
+        const a = analytics[pl] || {};
+        const cfg = PLATFORM_CONFIG[pl];
+        if (cfg) {
+          for (const m of cfg.metrics) {
+            const chartKey = cfg.keys[m];
+            if (chartKey) {
+              byDate[key][chartKey] = (byDate[key][chartKey] || 0) + (a[m] || 0);
+            }
+          }
+        }
+        // Always count posts per platform so chart isn't blank before analytics refresh
+        const countKey = `${pl}_count`;
+        byDate[key][countKey] = (byDate[key][countKey] || 0) + 1;
+      });
+    });
+    const rows = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+    setChartData(rows);
+  };
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams();
-      if (!allTime) {
-        if (fromDate) params.set('fromDate', fromDate);
-        if (toDate) params.set('toDate', toDate);
+      const uid = auth.currentUser?.uid;
+      if (!uid) { setLoading(false); return; }
+
+      // Load posts directly from client Firestore.
+      // Server GET /reports/posts always fails (no server-side Firestore credentials).
+      const clientPosts = await getPosts(uid, { limit: 200, status: 'published' });
+      let loadedPosts = clientPosts.map((p) => ({
+        ...p,
+        _id: p.id || p._id,
+        publishedAt: p.publishedAt || p.updatedAt || p.createdAt,
+        platformResults: p.platformResults || [],
+      }));
+
+      // Apply date filter client-side
+      if (!allTime && (fromDate || toDate)) {
+        const from = fromDate ? new Date(fromDate) : null;
+        const to = toDate ? new Date(toDate + 'T23:59:59.999Z') : null;
+        loadedPosts = loadedPosts.filter((p) => {
+          const d = new Date(p.publishedAt || p.createdAt);
+          if (from && d < from) return false;
+          if (to && d > to) return false;
+          return true;
+        });
       }
-      const [chartRes, postsRes] = await Promise.all([
-        api(`/reports/analytics?${params}`),
-        api(`/reports/posts?${params}`),
-      ]);
-      const chartJson = await chartRes.json();
-      const postsJson = await postsRes.json();
-      if (!chartRes.ok) setError(chartJson.error || 'Failed to load analytics');
-      if (!postsRes.ok) setError(postsJson.error || 'Failed to load posts');
-      setChartData(chartJson.data || []);
-      setPosts(postsJson.posts || []);
+
+      setPosts(loadedPosts);
+      buildChartFromPosts(loadedPosts);
     } catch (e) {
       setError(e?.message || 'Failed to load report data');
       setChartData([]);
@@ -119,42 +163,147 @@ export default function Report() {
   };
 
   useEffect(() => {
-    setAutoRefreshDone(false);
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate, toDate, allTime]);
-
-  // Auto-refresh analytics once when we have posts but no analytics data
-  useEffect(() => {
-    if (loading || autoRefreshDone || chartData.length === 0 || posts.length === 0) return;
-    const hasAnyAnalytics = chartData.some((d) =>
-      Object.keys(PLATFORM_CONFIG).some((p) => {
-        const cfg = PLATFORM_CONFIG[p];
-        return Object.values(cfg.keys).some((k) => d[k] > 0);
-      })
-    );
-    if (!hasAnyAnalytics) {
-      setAutoRefreshDone(true);
-      handleRefreshAnalytics();
-    }
-  }, [chartData.length, posts.length, loading, autoRefreshDone]);
 
   const handleRefreshAnalytics = async () => {
     setLoading(true);
     setError(null);
     try {
-      const body = allTime ? {} : { fromDate, toDate };
+      const uid = auth.currentUser?.uid;
+      const postsPayload = posts.slice(0, 30).map((p) => ({
+        _id: p._id || p.id,
+        platforms: p.platforms || [],
+        platformIds: p.platformIds || {},
+        publishedAt: p.publishedAt,
+      }));
+      let integrationsPayload = [];
+      try {
+        if (uid) integrationsPayload = await getIntegrations(uid);
+      } catch (_) {}
+      const body = {
+        posts: postsPayload,
+        integrations: integrationsPayload,
+        ...(allTime ? {} : { fromDate, toDate }),
+      };
       const res = await api('/reports/analytics/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       const json = await res.json();
-      if (!res.ok) setError(json.error || 'Refresh failed');
-      await loadData();
+      if (!res.ok && !json.fetched && !json.error?.includes('credentials')) {
+        setError(json.error || 'Analytics refresh failed. Some platforms may need re-authorization.');
+      }
+
+      // Merge analytics into posts state, persist to client Firestore, rebuild chart
+      const analyticsMap = json.analyticsMap || {};
+      const updatedPosts = posts.map((p) => {
+        const postId = String(p._id || p.id || '');
+        const freshAnalytics = analyticsMap[postId];
+        if (!freshAnalytics) return p;
+        // Persist analytics to client Firestore so they survive page reloads
+        if (uid && postId) {
+          updatePost(uid, postId, { analytics: freshAnalytics }).catch(() => {});
+        }
+        return { ...p, analytics: freshAnalytics };
+      });
+
+      if (Object.keys(analyticsMap).length > 0) {
+        setPosts(updatedPosts);
+        buildChartFromPosts(updatedPosts);
+        setLoading(false);
+      } else {
+        // Nothing new from server — just reload from client Firestore
+        await loadData();
+      }
     } catch (e) {
       setError(e?.message || 'Refresh failed');
+      setLoading(false);
     }
-    setLoading(false);
+  };
+
+  /**
+   * Sync posts from Facebook, Threads, Twitter via their APIs.
+   * Discovered posts are saved to client Firestore (deduplicated by platformId),
+   * then analytics are refreshed automatically.
+   */
+  const handleSyncPosts = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    setError(null);
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      let integrationsPayload = [];
+      try { integrationsPayload = await getIntegrations(uid); } catch (_) {}
+
+      const res = await api('/reports/sync-posts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ integrations: integrationsPayload }),
+      });
+      const json = await res.json();
+      const discovered = json.posts || [];
+
+      if (discovered.length === 0) {
+        setSyncResult('No new posts found on Facebook, Threads, or Twitter.');
+        setSyncing(false);
+        return;
+      }
+
+      // For each discovered platform post, check if it already exists in client Firestore.
+      // If yes, update platformIds; if no, create a new post document.
+      const existingPosts = await getPosts(uid, { limit: 200, status: 'published' });
+      let created = 0;
+      let updated = 0;
+
+      for (const dp of discovered) {
+        // Try to find an existing post that already has this platform ID
+        const existing = existingPosts.find((p) => {
+          const ids = p.platformIds || {};
+          return ids[dp.platform] === dp.postId;
+        });
+        if (existing) continue; // Already stored
+
+        // Try to find a post for the same platform around the same date (within 2 min)
+        const dpDate = new Date(dp.publishedAt).getTime();
+        const sameDay = existingPosts.find((p) => {
+          if (!(p.platforms || []).includes(dp.platform)) return false;
+          const pd = new Date(p.publishedAt || p.createdAt).getTime();
+          return Math.abs(pd - dpDate) < 2 * 60 * 1000; // within 2 minutes
+        });
+
+        if (sameDay) {
+          // Update existing post with the discovered platform ID
+          const newPlatformIds = { ...(sameDay.platformIds || {}), [dp.platform]: dp.postId };
+          await updatePost(uid, sameDay.id || sameDay._id, { platformIds: newPlatformIds }).catch(() => {});
+          updated++;
+        } else {
+          // Create a new post entry
+          await createPost(uid, {
+            content: dp.content,
+            platforms: [dp.platform],
+            platformIds: { [dp.platform]: dp.postId },
+            platformUrls: { [dp.platform]: dp.postUrl },
+            status: 'published',
+            publishedAt: new Date(dp.publishedAt),
+          }).catch(() => {});
+          created++;
+        }
+      }
+
+      setSyncResult(`Synced ${discovered.length} posts (${created} new, ${updated} updated). Refreshing analytics…`);
+
+      // Reload posts then auto-refresh analytics
+      await loadData();
+      await handleRefreshAnalytics();
+    } catch (e) {
+      setError(e?.message || 'Sync failed');
+    }
+    setSyncing(false);
   };
 
   const formatValue = (v) => (v != null && typeof v === 'number' ? v.toLocaleString() : '—');
@@ -220,8 +369,43 @@ export default function Report() {
             <option value="comments">Comments / Replies</option>
           </select>
         </div>
-        <button className="report-refresh" onClick={handleRefreshAnalytics} disabled={loading}>
+        <button className="report-refresh" onClick={handleRefreshAnalytics} disabled={loading || syncing}>
           {loading ? 'Loading…' : 'Refresh analytics'}
+        </button>
+        <button
+          className="report-sync"
+          onClick={handleSyncPosts}
+          disabled={syncing || loading}
+          title="Pull your recent posts from Facebook, Threads, and Twitter so their analytics appear here"
+        >
+          {syncing ? 'Syncing…' : '⟳ Sync Facebook / Threads / X posts'}
+        </button>
+        <button
+          type="button"
+          className="report-download"
+          onClick={async () => {
+            try {
+              const params = new URLSearchParams();
+              if (!allTime) {
+                if (fromDate) params.set('fromDate', fromDate);
+                if (toDate) params.set('toDate', toDate);
+              }
+              const res = await api(`/reports/download?${params}&format=csv`);
+              if (!res.ok) throw new Error('Download failed');
+              const blob = await res.blob();
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `report-${new Date().toISOString().slice(0, 10)}.csv`;
+              a.click();
+              URL.revokeObjectURL(url);
+            } catch (e) {
+              setError(e?.message || 'Download failed');
+            }
+          }}
+          disabled={loading}
+        >
+          Download CSV
         </button>
         <button
           type="button"
@@ -240,6 +424,25 @@ export default function Report() {
           Debug
         </button>
       </div>
+
+      {syncResult && (
+        <div className="report-sync-result">
+          {syncResult}
+        </div>
+      )}
+
+      {/* Prompt to refresh when posts exist but no analytics have been fetched yet */}
+      {!loading && posts.length > 0 && posts.every((p) => Object.keys(p.analytics || {}).length === 0) && (
+        <div className="report-analytics-hint">
+          <span>📊 Analytics not loaded yet.</span>
+          <button className="report-analytics-hint-btn" onClick={handleRefreshAnalytics} disabled={loading}>
+            Refresh analytics now
+          </button>
+          <span style={{ fontSize: '0.8rem', opacity: 0.7 }}>
+            Fetches live data from Instagram, Facebook, Threads, LinkedIn, and X.
+          </span>
+        </div>
+      )}
 
       {loading ? (
         <div className="report-loading"><LoadingScreen compact /></div>
@@ -344,7 +547,14 @@ export default function Report() {
           <section className="report-section">
             <h2>Post history</h2>
             {posts.length === 0 ? (
-              <p className="report-posts-empty">No published posts in this date range.</p>
+              <div className="report-posts-empty">
+                <p>No published posts found.</p>
+                <p style={{ marginTop: '0.5rem', fontSize: '0.875rem', opacity: 0.75 }}>
+                  Posts are saved to your local storage when you publish them. If you published
+                  posts before this feature was added, click <strong>Refresh analytics</strong>
+                  above — the server will look them up and save them here for future visits.
+                </p>
+              </div>
             ) : (
               <div className="report-posts-list">
                 {posts.map((post) => {
