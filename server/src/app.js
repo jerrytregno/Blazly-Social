@@ -46,9 +46,20 @@ app.use(async (req, res, next) => {
   next();
 });
 
+const ALLOWED_ORIGINS = [
+  config.frontendUrl,
+  'https://social.blazly.ai',
+  'https://localhost:5173',
+  'http://localhost:5173',
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: config.frontendUrl,
+    origin: (origin, cb) => {
+      // Allow same-origin requests (origin is undefined) and whitelisted origins
+      if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      cb(new Error(`CORS: origin ${origin} not allowed`));
+    },
     credentials: true,
   })
 );
