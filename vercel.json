@@ -3,15 +3,13 @@
   "outputDirectory": "public",
   "framework": null,
   "functions": {
-    "api/[...path].js": {
+    "api/server.js": {
       "maxDuration": 30
     }
   },
   "rewrites": [
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
-    }
+    { "source": "/api/(.*)", "destination": "/api/server" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "crons": [
     {
