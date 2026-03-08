@@ -39,9 +39,16 @@ function buildImagePrompt(userPrompt) {
   return `Create an image: ${p}`;
 }
 
-/** Gemini image gen. Try multiple models - names vary by region. */
+/**
+ * Gemini native image generation.
+ * Only models that support responseModalities IMAGE are listed here.
+ * Text/chat models (gemini-2.5-flash, etc.) do NOT generate images and must not be in this list.
+ */
 async function tryGeminiImage(prompt, key) {
-  const models = ['gemini-2.0-flash-exp-image-generation', 'gemini-2.5-flash-preview-05-20', 'gemini-3-pro-image-preview', 'gemini-2.5-flash'];
+  const models = [
+    'gemini-2.0-flash-preview-image-generation', // latest preview image model
+    'gemini-2.0-flash-exp-image-generation',      // experimental (free tier)
+  ];
   for (const modelId of models) {
     console.log('[imageGen] Trying model:', modelId);
     const url = await tryGeminiImageWithModel(prompt, key, modelId);
@@ -57,7 +64,11 @@ async function tryGeminiImage(prompt, key) {
 async function tryGeminiImageWithModel(prompt, key, modelId) {
   console.log('[imageGen] API base: generativelanguage.googleapis.com/v1beta/models/' + modelId);
   try {
-    const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }] };
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      // responseModalities is required — without it the model returns text, not an image
+      generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+    };
     const fullUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${key}`;
     const res = await axios.post(fullUrl, body, { timeout: 60000 });
     console.log('[imageGen] API response status:', res.status);
@@ -72,8 +83,9 @@ async function tryGeminiImageWithModel(prompt, key, modelId) {
     if (imageParts.length > 0) {
       const lastPart = imageParts[imageParts.length - 1];
       const data = lastPart.inlineData?.data || lastPart.inline_data?.data;
+      const mimeType = lastPart.inlineData?.mimeType || lastPart.inline_data?.mimeType || 'image/png';
       if (!data) return null;
-      return `data:image/png;base64,${data}`;
+      return `data:${mimeType};base64,${data}`;
     }
     console.log('[imageGen] No image parts in response for', modelId);
   } catch (err) {
