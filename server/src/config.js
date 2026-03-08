@@ -12,7 +12,7 @@ export const config = {
   linkedin: {
     clientId: process.env.LINKEDIN_CLIENT_ID,
     clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
-    redirectUri: process.env.LINKEDIN_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://social.blazly.ai'}/api/auth/linkedin/callback`,
+    redirectUri: process.env.LINKEDIN_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://social.blazly.ai'}/api/auth/integrations/linkedin/callback`,
     scope: process.env.LINKEDIN_SCOPE || 'w_member_social openid profile',
   },
   // LinkedIn Community Management API App (App B) — for analytics + comments only.
@@ -46,8 +46,8 @@ export const config = {
   instagram: {
     appId: process.env.INSTAGRAM_LOGIN_APP_ID,
     appSecret: process.env.INSTAGRAM_LOGIN_APP_SECRET,
-    // Must match Meta App: Instagram > Valid OAuth Redirect URIs. Backend URL avoids proxy/cookie issues.
-    redirectUri: process.env.INSTAGRAM_REDIRECT_URI || `http://localhost:${parseInt(process.env.PORT || '4000', 10)}/api/auth/integrations/instagram/callback`,
+    // Must match Meta App: Instagram > Valid OAuth Redirect URIs.
+    redirectUri: process.env.INSTAGRAM_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://social.blazly.ai'}/api/auth/integrations/instagram/callback`,
   },
   rateLimit: {
     appDailyLimit: parseInt(process.env.LINKEDIN_APP_DAILY_LIMIT || '100', 10),

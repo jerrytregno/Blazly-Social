@@ -92,7 +92,6 @@ export default function Report() {
   const [expandedPost, setExpandedPost] = useState(null);
   const [error, setError] = useState(null);
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState(null);
 
   /** Build recharts-compatible data from a posts array (uses stored analytics if present). */
   const buildChartFromPosts = (postsArr) => {
@@ -225,86 +224,9 @@ export default function Report() {
   };
 
   /**
-   * Sync posts from Facebook, Threads, Twitter via their APIs.
-   * Discovered posts are saved to client Firestore (deduplicated by platformId),
-   * then analytics are refreshed automatically.
+   * Sync posts — removed per user request.
+   * Left as a no-op to avoid breaking any stale references.
    */
-  const handleSyncPosts = async () => {
-    setSyncing(true);
-    setSyncResult(null);
-    setError(null);
-    try {
-      const uid = auth.currentUser?.uid;
-      if (!uid) return;
-
-      let integrationsPayload = [];
-      try { integrationsPayload = await getIntegrations(uid); } catch (_) {}
-
-      const res = await api('/reports/sync-posts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ integrations: integrationsPayload }),
-      });
-      const json = await res.json();
-      const discovered = json.posts || [];
-
-      if (discovered.length === 0) {
-        setSyncResult('No new posts found on Facebook, Threads, or Twitter.');
-        setSyncing(false);
-        return;
-      }
-
-      // For each discovered platform post, check if it already exists in client Firestore.
-      // If yes, update platformIds; if no, create a new post document.
-      const existingPosts = await getPosts(uid, { limit: 200, status: 'published' });
-      let created = 0;
-      let updated = 0;
-
-      for (const dp of discovered) {
-        // Try to find an existing post that already has this platform ID
-        const existing = existingPosts.find((p) => {
-          const ids = p.platformIds || {};
-          return ids[dp.platform] === dp.postId;
-        });
-        if (existing) continue; // Already stored
-
-        // Try to find a post for the same platform around the same date (within 2 min)
-        const dpDate = new Date(dp.publishedAt).getTime();
-        const sameDay = existingPosts.find((p) => {
-          if (!(p.platforms || []).includes(dp.platform)) return false;
-          const pd = new Date(p.publishedAt || p.createdAt).getTime();
-          return Math.abs(pd - dpDate) < 2 * 60 * 1000; // within 2 minutes
-        });
-
-        if (sameDay) {
-          // Update existing post with the discovered platform ID
-          const newPlatformIds = { ...(sameDay.platformIds || {}), [dp.platform]: dp.postId };
-          await updatePost(uid, sameDay.id || sameDay._id, { platformIds: newPlatformIds }).catch(() => {});
-          updated++;
-        } else {
-          // Create a new post entry
-          await createPost(uid, {
-            content: dp.content,
-            platforms: [dp.platform],
-            platformIds: { [dp.platform]: dp.postId },
-            platformUrls: { [dp.platform]: dp.postUrl },
-            status: 'published',
-            publishedAt: new Date(dp.publishedAt),
-          }).catch(() => {});
-          created++;
-        }
-      }
-
-      setSyncResult(`Synced ${discovered.length} posts (${created} new, ${updated} updated). Refreshing analytics…`);
-
-      // Reload posts then auto-refresh analytics
-      await loadData();
-      await handleRefreshAnalytics();
-    } catch (e) {
-      setError(e?.message || 'Sync failed');
-    }
-    setSyncing(false);
-  };
 
   const formatValue = (v) => (v != null && typeof v === 'number' ? v.toLocaleString() : '—');
 
@@ -369,16 +291,8 @@ export default function Report() {
             <option value="comments">Comments / Replies</option>
           </select>
         </div>
-        <button className="report-refresh" onClick={handleRefreshAnalytics} disabled={loading || syncing}>
+        <button className="report-refresh" onClick={handleRefreshAnalytics} disabled={loading}>
           {loading ? 'Loading…' : 'Refresh analytics'}
-        </button>
-        <button
-          className="report-sync"
-          onClick={handleSyncPosts}
-          disabled={syncing || loading}
-          title="Pull your recent posts from Facebook, Threads, and Twitter so their analytics appear here"
-        >
-          {syncing ? 'Syncing…' : '⟳ Sync Facebook / Threads / X posts'}
         </button>
         <button
           type="button"
@@ -424,12 +338,6 @@ export default function Report() {
           Debug
         </button>
       </div>
-
-      {syncResult && (
-        <div className="report-sync-result">
-          {syncResult}
-        </div>
-      )}
 
       {/* Prompt to refresh when posts exist but no analytics have been fetched yet */}
       {!loading && posts.length > 0 && posts.every((p) => Object.keys(p.analytics || {}).length === 0) && (

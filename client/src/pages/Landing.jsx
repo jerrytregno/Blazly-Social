@@ -7,7 +7,29 @@ import { createUser, getUser, setUser } from '../services/firestore';
 import LoadingScreen from '../components/LoadingScreen';
 import './Landing.css';
 
-async function ensureUserDoc(fbUser) {
+const FIREBASE_ERRORS = {
+  'auth/invalid-credential':       'Invalid email or password.',
+  'auth/user-not-found':           'No account found with this email.',
+  'auth/wrong-password':           'Incorrect password.',
+  'auth/email-already-in-use':     'An account with this email already exists. Try signing in.',
+  'auth/weak-password':            'Password must be at least 6 characters.',
+  'auth/too-many-requests':        'Too many failed attempts. Please try again in a few minutes.',
+  'auth/network-request-failed':   'Network error. Check your connection and try again.',
+  'auth/user-disabled':            'This account has been disabled. Contact support.',
+  'auth/invalid-email':            'Please enter a valid email address.',
+  'auth/popup-closed-by-user':     null, // don't show error
+  'auth/cancelled-popup-request':  null,
+  'auth/popup-blocked':            'Your browser blocked the sign-in popup. Please allow popups for this site.',
+};
+
+function friendlyAuthError(err) {
+  const code = err?.code || '';
+  if (FIREBASE_ERRORS[code] !== undefined) return FIREBASE_ERRORS[code];
+  const raw = err?.message || '';
+  // Strip Firebase boilerplate like "Firebase: Error (auth/...)."
+  const cleaned = raw.replace(/^Firebase:\s*/i, '').replace(/\s*\(auth\/[^)]+\)\.?$/, '').trim();
+  return cleaned || 'Something went wrong. Please try again.';
+}
   const existing = await getUser(fbUser.uid);
   if (existing) return;
   await createUser(fbUser.uid, {
@@ -70,7 +92,8 @@ export default function Landing() {
       }
     } catch (err) {
       console.error('Auth Error:', err);
-      setFormError(err?.message || 'Authentication failed');
+      const msg = friendlyAuthError(err);
+      if (msg) setFormError(msg);
     }
     setSubmitting(false);
   };
@@ -83,9 +106,8 @@ export default function Landing() {
       await ensureUserDoc(result.user);
       window.location.href = '/home';
     } catch (err) {
-      if (err?.code !== 'auth/popup-closed-by-user') {
-        setFormError(err?.message || 'Google sign-in failed');
-      }
+      const msg = friendlyAuthError(err);
+      if (msg) setFormError(msg);
     }
     setGoogleLoading(false);
   };

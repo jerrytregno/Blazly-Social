@@ -125,26 +125,81 @@ export default function Onboarding() {
   };
 
   const handleScrapeWebsite = async () => {
-    if (!websiteUrl.trim()) return;
+    const url = websiteUrl.trim();
+    if (!url) return;
+
+    // Validate URL format before hitting the server
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
+    } catch (_) {
+      setScrapeError('Please enter a valid URL starting with https:// or http://');
+      return;
+    }
+
     setScraping(true);
     setScrapeError('');
-    try {
-      const res = await api('/profile/scrape', {
-        method: 'POST',
-        body: JSON.stringify({ websiteUrl: websiteUrl.trim() }),
-      });
-      const data = await res.json();
-      if (res.ok && data.businessProfile) {
-        const uid = auth.currentUser?.uid || user?.id;
-        if (uid) await setUserProfile(uid, data.businessProfile);
-        setBusinessName(data.businessProfile?.businessName || businessName);
-        setBusinessSummary(data.businessProfile?.businessSummary || businessSummary);
-      } else {
-        setScrapeError(data.error || 'Scraping failed');
+
+    const MAX_RETRIES = 3;
+    const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+      try {
+        const res = await api('/profile/scrape', {
+          method: 'POST',
+          body: JSON.stringify({ websiteUrl: url }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        const data = await res.json().catch(() => ({}));
+
+        if (res.ok && data.businessProfile) {
+          const uid = auth.currentUser?.uid || user?.id;
+          if (uid) await setUserProfile(uid, data.businessProfile);
+          setBusinessName(data.businessProfile?.businessName || businessName);
+          setBusinessSummary(data.businessProfile?.businessSummary || businessSummary);
+          setScraping(false);
+          return; // Success — exit
+        }
+
+        // 4xx = bad URL / client error → no retry
+        if (res.status >= 400 && res.status < 500) {
+          setScrapeError(data.error || `Could not scrape this URL (${res.status}). Make sure it's a public website and the address is correct.`);
+          setScraping(false);
+          return;
+        }
+
+        // 5xx = server/scraping error → fall through to retry
+        if (attempt >= MAX_RETRIES) {
+          setScrapeError(data.error || 'Scraping failed after several attempts. You can skip this step and fill in your profile manually.');
+          setScraping(false);
+          return;
+        }
+      } catch (e) {
+        clearTimeout(timeoutId);
+        if (e.name === 'AbortError') {
+          setScrapeError('Scraping timed out (10 minutes). The site may be too large or unreachable. You can skip and fill in manually.');
+          setScraping(false);
+          return;
+        }
+        if (attempt >= MAX_RETRIES) {
+          setScrapeError(e.message || 'Scraping failed. Check your connection or skip this step.');
+          setScraping(false);
+          return;
+        }
       }
-    } catch (e) {
-      setScrapeError(e.message || 'Scraping failed');
+
+      // Exponential backoff before next retry: 1s, 2s, 4s
+      const backoff = Math.pow(2, attempt) * 1000;
+      setScrapeError(`Scraping failed, retrying in ${backoff / 1000}s… (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      await new Promise((r) => setTimeout(r, backoff));
+      setScrapeError('');
     }
+
     setScraping(false);
   };
 
@@ -316,7 +371,12 @@ export default function Onboarding() {
           <button className="onboarding__btn-skip" onClick={handleSkip}>
             Skip for now
           </button>
-          <button className="onboarding__btn-primary onboarding__btn-next" onClick={handleNext}>
+          <button
+            className="onboarding__btn-primary onboarding__btn-next"
+            onClick={handleNext}
+            disabled={step === 3 && scraping}
+            title={step === 3 && scraping ? 'Please wait for scraping to complete' : undefined}
+          >
             {step < 5 ? 'Next' : 'Complete'}
           </button>
         </div>

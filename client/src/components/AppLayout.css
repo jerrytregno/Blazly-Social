@@ -43,6 +43,7 @@
   display: flex;
   flex: 1;
   min-height: 0;
+  align-items: flex-start;
 }
 
 .app-layout__sidebar {
@@ -53,13 +54,17 @@
   border-right: 1px solid rgba(255, 255, 255, 0.12);
   display: flex;
   flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .app-layout__sidebar-inner {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
 }
