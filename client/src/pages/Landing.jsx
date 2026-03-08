@@ -30,6 +30,8 @@ function friendlyAuthError(err) {
   const cleaned = raw.replace(/^Firebase:\s*/i, '').replace(/\s*\(auth\/[^)]+\)\.?$/, '').trim();
   return cleaned || 'Something went wrong. Please try again.';
 }
+
+async function ensureUserDoc(fbUser) {
   const existing = await getUser(fbUser.uid);
   if (existing) return;
   await createUser(fbUser.uid, {
