@@ -333,7 +333,7 @@ router.get('/twitter/callback', async (req, res) => {
   }
 
   try {
-    const redirectUri = `${frontendUrl}/api/auth/integrations/twitter/callback`;
+    const redirectUri = config.twitter.redirectUri;
     const tokenData = await exchangeOAuth2Code(code, codeVerifier, redirectUri);
 
     if (tokenData.error) {
@@ -428,7 +428,7 @@ router.get('/twitter', async (req, res) => {
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: config.twitter.clientId,
-      redirect_uri: `${frontendUrl}/api/auth/integrations/twitter/callback`,
+      redirect_uri: config.twitter.redirectUri,
       scope: 'tweet.read tweet.write users.read offline.access',
       state,
       code_challenge: challenge,

@@ -34,6 +34,7 @@ export const config = {
     clientId: process.env.TWITTER_CLIENT_ID,
     clientSecret: process.env.TWITTER_CLIENT_SECRET,
     bearerToken: process.env.TWITTER_BEARER_TOKEN,
+    redirectUri: process.env.TWITTER_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://social.blazly.ai'}/api/auth/integrations/twitter/callback`,
     // OAuth 1.0a (Consumer Key/Secret) - required for media upload
     apiKey: process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY,
     apiSecret: process.env.TWITTER_API_SECRET || process.env.TWITTER_CONSUMER_SECRET,
