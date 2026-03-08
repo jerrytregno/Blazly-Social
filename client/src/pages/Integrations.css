@@ -106,6 +106,17 @@
   color: var(--text-muted);
 }
 
+.integrations__card-notice {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
 .integrations__card-actions {
   margin-top: auto;
   display: flex;

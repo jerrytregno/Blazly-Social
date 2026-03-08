@@ -44,8 +44,9 @@ export const config = {
     redirectUri: process.env.THREADS_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://social.blazly.ai'}/api/auth/integrations/threads/callback`,
   },
   instagram: {
-    appId: process.env.INSTAGRAM_LOGIN_APP_ID,
-    appSecret: process.env.INSTAGRAM_LOGIN_APP_SECRET,
+    // Accept either naming convention (INSTAGRAM_LOGIN_APP_ID or INSTAGRAM_APP_ID)
+    appId: process.env.INSTAGRAM_LOGIN_APP_ID || process.env.INSTAGRAM_APP_ID,
+    appSecret: process.env.INSTAGRAM_LOGIN_APP_SECRET || process.env.INSTAGRAM_APP_SECRET,
     // Must match Meta App: Instagram > Valid OAuth Redirect URIs.
     redirectUri: process.env.INSTAGRAM_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://social.blazly.ai'}/api/auth/integrations/instagram/callback`,
   },

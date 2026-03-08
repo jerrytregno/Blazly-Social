@@ -335,12 +335,43 @@
   font-size: 1rem;
 }
 
-.onboarding__item-name {
+.onboarding__item-body {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.onboarding__item-name {
   font-weight: 600;
   font-size: 0.95rem;
   color: #111;
   white-space: nowrap;
+}
+
+.onboarding__item-note {
+  font-size: 0.72rem;
+  color: #92400e;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.onboarding__item--disabled {
+  opacity: 0.75;
+  background: #fafafa;
+}
+
+.onboarding__item-locked {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #888;
+  background: #f0f0f5;
+  border: 1px solid #d8d8e4;
+  border-radius: 8px;
+  padding: 6px 12px;
+  white-space: nowrap;
+  cursor: default;
 }
 
 .onboarding__item-status {

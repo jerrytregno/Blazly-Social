@@ -16,7 +16,7 @@ const STEPS = [
 const PLATFORMS = [
   { id: 'linkedin', name: 'LinkedIn', color: '#0a66c2' },
   { id: 'facebook', name: 'Facebook', color: '#1877F2' },
-  { id: 'twitter', name: 'Twitter', color: '#000000' },
+  { id: 'twitter', name: 'X (Twitter)', color: '#1DA1F2', onboardingDisabled: true, onboardingNote: 'Connect from Integrations after setup — X(twitter) works after registering.'},
   { id: 'threads', name: 'Threads', color: '#000000' },
   { id: 'instagram', name: 'Instagram', color: '#E4405F' },
 ];
@@ -379,12 +379,20 @@ export default function Onboarding() {
             <div className="onboarding__grid">
               {PLATFORMS.map((p) => {
                 const int = getIntegration(p.id);
+                const isDisabled = p.onboardingDisabled && !int;
                 return (
-                  <div key={p.id} className="onboarding__item">
+                  <div key={p.id} className={`onboarding__item${isDisabled ? ' onboarding__item--disabled' : ''}`}>
                     <div className="onboarding__item-icon" style={{ color: p.color }}>{p.name[0]}</div>
-                    <span className="onboarding__item-name">{p.name}</span>
+                    <div className="onboarding__item-body">
+                      <span className="onboarding__item-name">{p.name}</span>
+                      {isDisabled && p.onboardingNote && (
+                        <span className="onboarding__item-note">{p.onboardingNote}</span>
+                      )}
+                    </div>
                     {int ? (
                       <span className="onboarding__item-status">Connected</span>
+                    ) : isDisabled ? (
+                      <span className="onboarding__item-locked" title={p.onboardingNote}>After setup</span>
                     ) : (
                       <button
                         className="onboarding__btn-connect"
