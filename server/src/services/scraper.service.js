@@ -1,19 +1,92 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
+const BOT_UA = 'Mozilla/5.0 (compatible; BlazlyBot/1.0; +https://blazly.app)';
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
 /**
- * Fetch HTML from URL with timeout and user-agent
+ * Fetch HTML from URL with timeout and user-agent.
+ * Retries with a browser UA if bot UA is blocked (403/429).
  */
 export async function fetchHtml(url) {
   const normalized = url.startsWith('http') ? url : `https://${url}`;
-  const { data } = await axios.get(normalized, {
-    timeout: 15000,
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (compatible; BlazlyBot/1.0; +https://blazly.app)',
-    },
-  });
-  return data;
+  for (const ua of [BOT_UA, BROWSER_UA]) {
+    try {
+      const { data } = await axios.get(normalized, {
+        timeout: 20000,
+        headers: { 'User-Agent': ua },
+        maxRedirects: 5,
+      });
+      return data;
+    } catch (err) {
+      const status = err.response?.status;
+      if ((status === 403 || status === 429) && ua === BOT_UA) continue; // retry with browser UA
+      if (status === 403) throw new Error('This website blocks automated access. Try a different URL or skip this step.');
+      if (status === 404) throw new Error('Website not found (404). Check the URL and try again.');
+      if (status === 429) throw new Error('Website is rate-limiting requests. Please try again in a moment.');
+      throw err;
+    }
+  }
+}
+
+/**
+ * Attempt to fetch and parse a sitemap (sitemap.xml or sitemap_index.xml).
+ * Returns an array of up to `limit` page URLs found in the sitemap, or [] if none.
+ */
+export async function fetchSitemapUrls(baseUrl, limit = 10) {
+  const origin = new URL(baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`).origin;
+  const candidates = [
+    `${origin}/sitemap.xml`,
+    `${origin}/sitemap_index.xml`,
+    `${origin}/sitemap/sitemap.xml`,
+    `${origin}/wp-sitemap.xml`,
+  ];
+
+  for (const sitemapUrl of candidates) {
+    try {
+      const { data } = await axios.get(sitemapUrl, {
+        timeout: 10000,
+        headers: { 'User-Agent': BOT_UA },
+      });
+      if (typeof data !== 'string') continue;
+      const $ = cheerio.load(data, { xmlMode: true });
+      const urls = [];
+      // Standard sitemap: <url><loc>...</loc></url>
+      $('url > loc').each((_, el) => urls.push($(el).text().trim()));
+      // Sitemap index: <sitemap><loc>...</loc></sitemap> — grab first child sitemap
+      if (urls.length === 0) {
+        $('sitemap > loc').each((_, el) => urls.push($(el).text().trim()));
+      }
+      if (urls.length > 0) {
+        // Prioritise homepage, about, services, product pages
+        const priority = urls.filter((u) => /\/(about|services|product|home|who-we|what-we)/i.test(u));
+        const rest = urls.filter((u) => !priority.includes(u));
+        return [...priority, ...rest].slice(0, limit);
+      }
+    } catch (_) {
+      // Sitemap not found at this path — try next
+    }
+  }
+  return [];
+}
+
+/**
+ * Fetch and combine text from multiple pages (sitemap-discovered URLs).
+ * Returns concatenated extractedText, or null if all fail.
+ */
+export async function fetchSitemapContent(baseUrl, limit = 5) {
+  const urls = await fetchSitemapUrls(baseUrl, 15);
+  if (urls.length === 0) return null;
+
+  const texts = [];
+  for (const url of urls.slice(0, limit)) {
+    try {
+      const html = await fetchHtml(url);
+      const { extractedText } = extractStructuredContent(html);
+      if (extractedText?.trim()) texts.push(extractedText.trim());
+    } catch (_) { /* skip pages we can't fetch */ }
+  }
+  return texts.length > 0 ? texts.join('\n\n---\n\n') : null;
 }
 
 /**

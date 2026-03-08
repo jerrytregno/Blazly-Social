@@ -1,7 +1,7 @@
 import axios from 'axios';
 import * as userProfileRepo from '../db/userProfileRepository.js';
 import * as userRepo from '../db/userRepository.js';
-import { fetchHtml, extractStructuredContent } from './scraper.service.js';
+import { fetchHtml, extractStructuredContent, fetchSitemapContent } from './scraper.service.js';
 import { analyzeBrandFromScraped } from './gemini.js';
 import * as knowledgeBaseService from './knowledgeBase.service.js';
 import { calculateProfileCompletion } from './profileCompletion.service.js';
@@ -12,17 +12,25 @@ import { calculateProfileCompletion } from './profileCompletion.service.js';
  */
 export async function scrapeWebsiteOnly(websiteUrl, customScraperApiUrl = null) {
   let extractedText;
+  let usedSitemap = false;
   if (customScraperApiUrl) {
     const { data } = await axios.post(customScraperApiUrl, { url: websiteUrl }, { timeout: 30000 });
     extractedText = data.extractedText || data.text || (typeof data === 'string' ? data : '');
   } else {
-    const html = await fetchHtml(websiteUrl);
-    const structured = extractStructuredContent(html);
-    extractedText = structured.extractedText;
+    // Try sitemap first — richer multi-page content
+    const sitemapText = await fetchSitemapContent(websiteUrl, 5).catch(() => null);
+    if (sitemapText) {
+      extractedText = sitemapText;
+      usedSitemap = true;
+    } else {
+      const html = await fetchHtml(websiteUrl);
+      const structured = extractStructuredContent(html);
+      extractedText = structured.extractedText;
+    }
   }
   const aiResult = await analyzeBrandFromScraped(extractedText, websiteUrl);
   if (aiResult.error) throw new Error(aiResult.error);
-  return { ...aiResult, websiteUrl, lastScrapedAt: new Date() };
+  return { ...aiResult, websiteUrl, lastScrapedAt: new Date(), usedSitemap };
 }
 
 /**
@@ -41,9 +49,16 @@ export async function scrapeAndUpdateProfile(userId, websiteUrl, customScraperAp
     extractedText = data.extractedText || data.text || (typeof data === 'string' ? data : '');
     structured = { extractedText, title: data.title || '', metaDescription: data.metaDescription || '' };
   } else {
-    const html = await fetchHtml(websiteUrl);
-    structured = extractStructuredContent(html);
-    extractedText = structured.extractedText;
+    // Sitemap-first: richer multi-page content, better for brand analysis
+    const sitemapText = await fetchSitemapContent(websiteUrl, 5).catch(() => null);
+    if (sitemapText) {
+      extractedText = sitemapText;
+      structured = { extractedText, title: '', metaDescription: '' };
+    } else {
+      const html = await fetchHtml(websiteUrl);
+      structured = extractStructuredContent(html);
+      extractedText = structured.extractedText;
+    }
   }
 
   const aiResult = await analyzeBrandFromScraped(extractedText, websiteUrl);

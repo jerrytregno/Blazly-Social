@@ -530,16 +530,8 @@ export default function PostComposer({
             <svg width="24" height="24" viewBox="0 0 24 24" fill="#378fe9"><path d="M19 4H5a3 3 0 00-3 3v10a3 3 0 003 3h14a3 3 0 003-3V7a3 3 0 00-3-3zm1 13a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h14a1 1 0 011 1v10z" /><circle cx="8" cy="10" r="2" /><path d="M16 9l-4 4-2-2-4 4v1h14v-4z" /></svg>
             <span>Media</span>
           </button>
-          <button className="trigger-action">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="#5f9b41"><path d="M19 4H5a3 3 0 00-3 3v10a3 3 0 003 3h14a3 3 0 003-3V7a3 3 0 00-3-3zm1 13a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h14a1 1 0 011 1v10z" /><path d="M16 10.5l4-2v7l-4-2v-3zM7 9h7v2H7V9zm0 4h7v2H7v-2z" /></svg>
-            <span>Video</span>
-          </button>
-          <button className="trigger-action">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="#c37d16"><path d="M19 4H5a3 3 0 00-3 3v10a3 3 0 003 3h14a3 3 0 003-3V7a3 3 0 00-3-3zm1 13a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h14a1 1 0 011 1v10z" /><path d="M9 14h6v2H9v-2zm0-4h6v2H9v-2zm0-4h6v2H9v-2zm0-4h6v2H9V6z" /></svg>
-            <span>Article</span>
-          </button>
         </div>
-        <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileUpload} accept="image/*,video/*" />
+        <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileUpload} multiple accept="image/*,video/*" />
       </div>
     );
   }

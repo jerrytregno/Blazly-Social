@@ -32,7 +32,7 @@ const PLATFORM_CONFIG = {
   },
   twitter: {
     label: 'X',
-    color: '#000000',
+    color: '#1DA1F2',
     metrics: ['impressions', 'likes', 'retweets', 'replies'],
     keys: {
       impressions: 'twitter_impressions',
@@ -80,6 +80,7 @@ export default function Report() {
   const navigate = useNavigate();
   const [chartData, setChartData] = useState([]);
   const [posts, setPosts] = useState([]);
+  const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [metric, setMetric] = useState('impressions');
   const [allTime, setAllTime] = useState(true); // Show all published posts by default
@@ -92,6 +93,9 @@ export default function Report() {
   const [expandedPost, setExpandedPost] = useState(null);
   const [error, setError] = useState(null);
   const [syncing, setSyncing] = useState(false);
+
+  // Set of platform IDs the user has active integrations for
+  const connectedPlatforms = new Set(integrations.filter((i) => i.isActive !== false).map((i) => i.platform));
 
   /** Build recharts-compatible data from a posts array (uses stored analytics if present). */
   const buildChartFromPosts = (postsArr) => {
@@ -129,9 +133,14 @@ export default function Report() {
       const uid = auth.currentUser?.uid;
       if (!uid) { setLoading(false); return; }
 
-      // Load posts directly from client Firestore.
-      // Server GET /reports/posts always fails (no server-side Firestore credentials).
-      const clientPosts = await getPosts(uid, { limit: 200, status: 'published' });
+      // Load integrations + posts in parallel
+      const [clientPosts, userIntegrations] = await Promise.all([
+        getPosts(uid, { limit: 200, status: 'published' }),
+        getIntegrations(uid).catch(() => []),
+      ]);
+
+      setIntegrations(userIntegrations);
+
       let loadedPosts = clientPosts.map((p) => ({
         ...p,
         _id: p.id || p._id,
@@ -230,13 +239,15 @@ export default function Report() {
 
   const formatValue = (v) => (v != null && typeof v === 'number' ? v.toLocaleString() : '—');
 
+  /** Returns chart lines for a platform. Shows a line whenever the platform has posts (even if analytics = 0). */
   const getPlatformChartLines = (platformKey) => {
     const config = PLATFORM_CONFIG[platformKey];
     if (!config) return [];
     const lines = [];
     for (const m of config.metrics) {
       const key = config.keys[m];
-      if (key && chartData.some((d) => d[key] != null && d[key] > 0)) {
+      // Include line if any chartData row has this key defined (even if 0 — flat line shows posts exist)
+      if (key && chartData.some((d) => d[key] !== undefined)) {
         lines.push({
           dataKey: key,
           name: METRIC_LABELS[m] || m,
@@ -246,6 +257,12 @@ export default function Report() {
     }
     return lines;
   };
+
+  /** Platforms visible in the report: connected integrations + any platform that has posts */
+  const platformsWithPosts = new Set(posts.flatMap((p) => p.platforms || []));
+  const visiblePlatforms = Object.keys(PLATFORM_CONFIG).filter(
+    (k) => connectedPlatforms.has(k) || platformsWithPosts.has(k)
+  );
 
   return (
     <div className="report-page">
@@ -366,16 +383,25 @@ export default function Report() {
                   <LineChart data={chartData} margin={{ top: 24, right: 32, left: 24, bottom: 24 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis dataKey="date" tick={{ fontSize: 12 }} stroke="#6b7280" />
-                    <YAxis tick={{ fontSize: 12 }} stroke="#6b7280" tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v)} />
+                    <YAxis
+                      tick={{ fontSize: 12 }}
+                      stroke="#6b7280"
+                      tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v)}
+                      label={{ value: METRIC_LABELS[metric] || metric, angle: -90, position: 'insideLeft', offset: -4, style: { fontSize: 11, fill: '#9ca3af' } }}
+                    />
                     <Tooltip
-                      formatter={(value) => [formatValue(value), '']}
+                      formatter={(value, name) => [formatValue(value), name]}
                       labelFormatter={(label) => `Date: ${label}`}
                       contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb' }}
                     />
                     <Legend wrapperStyle={{ paddingTop: 16 }} />
-                    {Object.entries(PLATFORM_CONFIG).map(([platformKey, config]) => {
+                    {visiblePlatforms.map((platformKey) => {
+                      const config = PLATFORM_CONFIG[platformKey];
+                      if (!config) return null;
                       const key = config.keys[metric] || config.keys.impressions || config.keys.views;
                       if (!key) return null;
+                      // Only render line if this platform has at least one data point
+                      if (!chartData.some((d) => d[key] !== undefined)) return null;
                       return (
                         <Line
                           key={`${platformKey}-${key}`}
@@ -403,15 +429,25 @@ export default function Report() {
           {/* Per-platform line charts */}
           <section className="report-section">
             <h2>Per platform — line charts</h2>
-            <p className="report-chart-subtitle">Impressions, likes, comments, and engagement for each platform</p>
+            <p className="report-chart-subtitle">Impressions, likes, comments, and engagement for each connected platform</p>
+            {visiblePlatforms.length === 0 && (
+              <div className="report-chart-placeholder">
+                No connected platforms yet. Go to <strong>Integrations</strong> to connect your accounts.
+              </div>
+            )}
             <div className="report-charts-grid">
-              {Object.entries(PLATFORM_CONFIG).map(([platformKey, config]) => {
+              {visiblePlatforms.map((platformKey) => {
+                const config = PLATFORM_CONFIG[platformKey];
+                if (!config) return null;
                 const lines = getPlatformChartLines(platformKey);
+                const postCount = posts.filter((p) => (p.platforms || []).includes(platformKey)).length;
+                const isConnected = connectedPlatforms.has(platformKey);
                 return (
                   <div key={platformKey} className="report-chart-card">
                     <div className="report-chart-header">
                       <PlatformLogo platform={platformKey} size={24} />
                       <h3>{config.label}</h3>
+                      {isConnected && <span className="report-connected-badge">Connected</span>}
                     </div>
                     <div className="report-chart-inner">
                       {lines.length > 0 ? (
@@ -421,7 +457,7 @@ export default function Report() {
                             <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                             <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => (v >= 1000 ? `${v / 1000}k` : v)} />
                             <Tooltip
-                              formatter={(value) => [formatValue(value), '']}
+                              formatter={(value, name) => [formatValue(value), name]}
                               labelFormatter={(label) => `Date: ${label}`}
                             />
                             <Legend />
@@ -441,7 +477,11 @@ export default function Report() {
                         </ResponsiveContainer>
                       ) : (
                         <div className="report-chart-placeholder">
-                          No {config.label} data yet. Publish posts and click Refresh analytics.
+                          {postCount > 0
+                            ? `${postCount} ${config.label} post${postCount > 1 ? 's' : ''} found. Click "Refresh analytics" to load engagement data.`
+                            : isConnected
+                            ? `No ${config.label} posts yet. Publish a post to see analytics.`
+                            : `No ${config.label} data.`}
                         </div>
                       )}
                     </div>

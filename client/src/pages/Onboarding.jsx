@@ -52,6 +52,8 @@ export default function Onboarding() {
   const [websiteUrl, setWebsiteUrl] = useState('');
   const [scraping, setScraping] = useState(false);
   const [scrapeError, setScrapeError] = useState('');
+  const [scrapeStatus, setScrapeStatus] = useState('');
+  const [usedSitemap, setUsedSitemap] = useState(false);
   const [integrations, setIntegrations] = useState([]);
 
   useEffect(() => {
@@ -139,6 +141,8 @@ export default function Onboarding() {
 
     setScraping(true);
     setScrapeError('');
+    setScrapeStatus('Checking sitemap…');
+    setUsedSitemap(false);
 
     const MAX_RETRIES = 3;
     const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -148,6 +152,9 @@ export default function Onboarding() {
       const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
       try {
+        if (attempt === 0) setScrapeStatus('Checking sitemap…');
+        else setScrapeStatus(`Reading pages from ${url}…`);
+
         const res = await api('/profile/scrape', {
           method: 'POST',
           body: JSON.stringify({ websiteUrl: url }),
@@ -159,15 +166,21 @@ export default function Onboarding() {
 
         if (res.ok && data.businessProfile) {
           const uid = auth.currentUser?.uid || user?.id;
-          if (uid) await setUserProfile(uid, data.businessProfile);
+          // Firestore save is best-effort — don't let a permission error trigger retries
+          if (uid) {
+            try { await setUserProfile(uid, data.businessProfile); } catch (_) {}
+          }
           setBusinessName(data.businessProfile?.businessName || businessName);
           setBusinessSummary(data.businessProfile?.businessSummary || businessSummary);
+          if (data.businessProfile?.usedSitemap) setUsedSitemap(true);
+          setScrapeStatus('');
           setScraping(false);
-          return; // Success — exit
+          return;
         }
 
-        // 4xx = bad URL / client error → no retry
+        // 4xx = bad URL / website blocked → no retry
         if (res.status >= 400 && res.status < 500) {
+          setScrapeStatus('');
           setScrapeError(data.error || `Could not scrape this URL (${res.status}). Make sure it's a public website and the address is correct.`);
           setScraping(false);
           return;
@@ -175,6 +188,7 @@ export default function Onboarding() {
 
         // 5xx = server/scraping error → fall through to retry
         if (attempt >= MAX_RETRIES) {
+          setScrapeStatus('');
           setScrapeError(data.error || 'Scraping failed after several attempts. You can skip this step and fill in your profile manually.');
           setScraping(false);
           return;
@@ -182,11 +196,13 @@ export default function Onboarding() {
       } catch (e) {
         clearTimeout(timeoutId);
         if (e.name === 'AbortError') {
+          setScrapeStatus('');
           setScrapeError('Scraping timed out (10 minutes). The site may be too large or unreachable. You can skip and fill in manually.');
           setScraping(false);
           return;
         }
         if (attempt >= MAX_RETRIES) {
+          setScrapeStatus('');
           setScrapeError(e.message || 'Scraping failed. Check your connection or skip this step.');
           setScraping(false);
           return;
@@ -195,11 +211,11 @@ export default function Onboarding() {
 
       // Exponential backoff before next retry: 1s, 2s, 4s
       const backoff = Math.pow(2, attempt) * 1000;
-      setScrapeError(`Scraping failed, retrying in ${backoff / 1000}s… (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      setScrapeStatus(`Retrying in ${backoff / 1000}s… (attempt ${attempt + 1}/${MAX_RETRIES})`);
       await new Promise((r) => setTimeout(r, backoff));
-      setScrapeError('');
     }
 
+    setScrapeStatus('');
     setScraping(false);
   };
 
@@ -305,7 +321,11 @@ export default function Onboarding() {
 
         {step === 3 && (
           <>
-            <p>Add your website URL. We'll scrape it to identify your business details and fill the profile questions automatically.</p>
+            <p>Add your website URL and we'll automatically fill in your brand profile.</p>
+            <div className="onboarding__sitemap-notice">
+              <span className="onboarding__sitemap-icon">🗺</span>
+              <span>We check your sitemap first to gather richer content from multiple pages. Only publicly accessible pages are read.</span>
+            </div>
             <div className="onboarding__field">
               <label>Website URL</label>
               <input
@@ -313,6 +333,7 @@ export default function Onboarding() {
                 value={websiteUrl}
                 onChange={(e) => setWebsiteUrl(e.target.value)}
                 placeholder="https://yourcompany.com"
+                disabled={scraping}
               />
             </div>
             <button
@@ -320,8 +341,22 @@ export default function Onboarding() {
               onClick={handleScrapeWebsite}
               disabled={scraping || !websiteUrl.trim()}
             >
-              {scraping ? 'Scraping…' : 'Scrape & Analyze'}
+              {scraping ? 'Analyzing…' : 'Scrape & Analyze'}
             </button>
+            {scraping && (
+              <div className="onboarding__scrape-loader">
+                <div className="onboarding__scrape-spinner" />
+                <div className="onboarding__scrape-info">
+                  <span className="onboarding__scrape-url">{websiteUrl}</span>
+                  {scrapeStatus && <span className="onboarding__scrape-status">{scrapeStatus}</span>}
+                </div>
+              </div>
+            )}
+            {usedSitemap && !scraping && (
+              <div className="onboarding__sitemap-success">
+                Sitemap found — profile enriched from multiple pages.
+              </div>
+            )}
             {scrapeError && <p className="onboarding__error">{scrapeError}</p>}
             {businessSummary && (
               <div className="onboarding__summary">
