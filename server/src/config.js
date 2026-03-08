@@ -5,14 +5,14 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   // Firebase/Firestore - set FIREBASE_SERVICE_ACCOUNT or FIREBASE_SERVICE_ACCOUNT_PATH
   // Dev: Vite at 5173. Production: set FRONTEND_URL to your app URL (e.g. https://yourapp.com) when same-origin
-  frontendUrl: process.env.FRONTEND_URL || 'https://localhost:5173',
+  frontendUrl: process.env.FRONTEND_URL || 'https://social.blazly.ai',
   uploadBaseUrl: process.env.UPLOAD_BASE_URL || '',
   // Public base URL for API (e.g. https://yourapp.com or https://xxx.ngrok.io). Required for Instagram/LinkedIn to fetch images.
   apiPublicUrl: process.env.API_PUBLIC_URL || '',
   linkedin: {
     clientId: process.env.LINKEDIN_CLIENT_ID,
     clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
-    redirectUri: process.env.LINKEDIN_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://localhost:5173'}/api/auth/linkedin/callback`,
+    redirectUri: process.env.LINKEDIN_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://social.blazly.ai'}/api/auth/linkedin/callback`,
     scope: process.env.LINKEDIN_SCOPE || 'w_member_social openid profile',
   },
   // LinkedIn Community Management API App (App B) — for analytics + comments only.
@@ -41,7 +41,7 @@ export const config = {
   threads: {
     appId: process.env.THREADS_APP_ID,
     appSecret: process.env.THREADS_APP_SECRET,
-    redirectUri: process.env.THREADS_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://localhost:5173'}/api/auth/integrations/threads/callback`,
+    redirectUri: process.env.THREADS_REDIRECT_URI || `${process.env.FRONTEND_URL || 'https://social.blazly.ai'}/api/auth/integrations/threads/callback`,
   },
   instagram: {
     appId: process.env.INSTAGRAM_LOGIN_APP_ID,

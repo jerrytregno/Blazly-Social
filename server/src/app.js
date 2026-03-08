@@ -49,8 +49,8 @@ app.use(async (req, res, next) => {
 const ALLOWED_ORIGINS = [
   config.frontendUrl,
   'https://social.blazly.ai',
-  'https://localhost:5173',
-  'http://localhost:5173',
+  'https://social.blazly.ai',
+  'http://social.blazly.ai',
 ].filter(Boolean);
 
 app.use(

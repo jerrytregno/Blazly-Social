@@ -17,7 +17,7 @@ Create and schedule posts across LinkedIn, Instagram, Twitter, and more. Users s
   - App: Blazly Social Media Automation (Client ID: `86swiutwriegdi`)  
   - Products: Share on LinkedIn (`w_member_social`)  
   - In [Developer Portal](https://www.linkedin.com/developers/apps) → Your app → **Auth**: add redirect URL  
-    - Local: `https://localhost:5173/api/auth/linkedin/callback`  
+    - Local: `https://social.blazly.ai/api/auth/linkedin/callback`  
   - Copy **Client Secret** from the Auth tab (never commit it).
 
 ## Quick start
@@ -38,11 +38,11 @@ npm run dev
 
 This starts both:
 - **API** at http://localhost:4000
-- **App** at https://localhost:5173 (Vite dev server proxies `/api` to the backend)
+- **App** at https://social.blazly.ai (Vite dev server proxies `/api` to the backend)
 
 ### 3. Use the app
 
-1. Open https://localhost:5173
+1. Open https://social.blazly.ai
 2. Click **Sign in with LinkedIn** (redirects to LinkedIn, then back to the app)
 3. On the dashboard: write a post, choose **Post now** or **Schedule** (date/time)
 4. Scheduled posts are published by the backend cron every minute (see `server/src/scheduler.js`)
@@ -63,7 +63,7 @@ This starts both:
 |----------|-------------|
 | `PORT` | API port (default `4000`) |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | Path to Firebase service account JSON (or use `FIREBASE_SERVICE_ACCOUNT` for JSON string) |
-| `FRONTEND_URL` | Frontend origin for CORS and OAuth redirect (e.g. `https://localhost:5173`) |
+| `FRONTEND_URL` | Frontend origin for CORS and OAuth redirect (e.g. `https://social.blazly.ai`) |
 | `LINKEDIN_CLIENT_ID` | LinkedIn app Client ID |
 | `LINKEDIN_CLIENT_SECRET` | LinkedIn app Client Secret (**required**) |
 | `LINKEDIN_REDIRECT_URI` | Must match a redirect URL in the LinkedIn app |
